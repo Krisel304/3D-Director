@@ -124,6 +124,7 @@ export function CameraInspector() {
         animation.cameraCuts,
         animation.currentTime,
         activeCameraId,
+        new Set(cameras.filter((item) => item.visible).map((item) => item.id)),
       );
     }
     return selectedCameraId ?? activeCameraId;
@@ -132,6 +133,7 @@ export function CameraInspector() {
     animation.cameraCuts,
     animation.currentTime,
     animation.isPlaying,
+    cameras,
     selectedCameraId,
   ]);
   const camera =

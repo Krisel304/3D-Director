@@ -6,3 +6,4 @@ vite.config.d.ts
 .DS_Store
 docs/prd/
 docs/development-policy.md
+.vercel

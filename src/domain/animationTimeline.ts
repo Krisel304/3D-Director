@@ -152,18 +152,21 @@ export function resolvePlaybackCameraId(
   cameraCuts: AnimationCameraCut[],
   time: number,
   fallbackCameraId?: string,
+  playableCameraIds?: Set<string>,
 ) {
-  const ordered = sortCameraCuts(cameraCuts);
-  const matched =
-    ordered.find(
-      (cut) =>
-        getCameraCutStart(cut) <= time + 0.0001 &&
-        time < getCameraCutEnd(cut) - 0.0001,
-    ) ??
-    ordered
-      .filter((cut) => getCameraCutStart(cut) <= time + 0.0001)
-      .at(-1);
-  return matched?.cameraId ?? fallbackCameraId;
+  const ordered = sortCameraCuts(cameraCuts).filter(
+    (cut) =>
+      (!playableCameraIds || playableCameraIds.has(cut.cameraId)) &&
+      getCameraCutStart(cut) <= time + 0.0001,
+  );
+  const matched = ordered[ordered.length - 1];
+  if (matched?.cameraId) {
+    return matched.cameraId;
+  }
+  if (!playableCameraIds || (fallbackCameraId && playableCameraIds.has(fallbackCameraId))) {
+    return fallbackCameraId;
+  }
+  return playableCameraIds.values().next().value;
 }
 
 function sampleNumberChannel(
@@ -238,6 +241,72 @@ function sampleVec3Channel(
   return cloneValue(last.value) as Vec3;
 }
 
+function sampleObjectTrajectory(
+  binding: AnimationBinding,
+  channel: AnimationChannel,
+  time: number,
+): { position: Vec3; tangent?: Vec3 } | undefined {
+  const ordered = sortKeyframes(channel.keyframes);
+  if (!ordered.length) return undefined;
+  if (ordered.length === 1) return { position: cloneValue(ordered[0].value) as Vec3 };
+
+  let pairIndex = 0;
+  let alpha = 0;
+  if (time >= ordered[ordered.length - 1].time) {
+    pairIndex = ordered.length - 2;
+    alpha = 1;
+  } else if (time > ordered[0].time) {
+    for (let index = 0; index < ordered.length - 1; index += 1) {
+      const current = ordered[index];
+      const next = ordered[index + 1];
+      if (time >= current.time && time <= next.time) {
+        pairIndex = index;
+        alpha = next.time === current.time ? 0 : (time - current.time) / (next.time - current.time);
+        break;
+      }
+    }
+  }
+
+  const start = ordered[pairIndex];
+  const end = ordered[pairIndex + 1];
+  if (start.interpolation === "step" || end.time === start.time) {
+    return { position: cloneValue(start.value) as Vec3 };
+  }
+  const startValue = start.value as Vec3;
+  const endValue = end.value as Vec3;
+  const segment = binding.trajectorySegments?.find(
+    (item) => item.startKeyframeId === start.id && item.endKeyframeId === end.id,
+  );
+  if (!segment) {
+    return {
+      position: [
+        startValue[0] + (endValue[0] - startValue[0]) * alpha,
+        startValue[1] + (endValue[1] - startValue[1]) * alpha,
+        startValue[2] + (endValue[2] - startValue[2]) * alpha,
+      ],
+      tangent: [
+        endValue[0] - startValue[0],
+        endValue[1] - startValue[1],
+        endValue[2] - startValue[2],
+      ],
+    };
+  }
+  const control = segment.controlPoint;
+  const inverse = 1 - alpha;
+  return {
+    position: [
+      inverse * inverse * startValue[0] + 2 * inverse * alpha * control[0] + alpha * alpha * endValue[0],
+      inverse * inverse * startValue[1] + 2 * inverse * alpha * control[1] + alpha * alpha * endValue[1],
+      inverse * inverse * startValue[2] + 2 * inverse * alpha * control[2] + alpha * alpha * endValue[2],
+    ],
+    tangent: [
+      2 * inverse * (control[0] - startValue[0]) + 2 * alpha * (endValue[0] - control[0]),
+      2 * inverse * (control[1] - startValue[1]) + 2 * alpha * (endValue[1] - control[1]),
+      2 * inverse * (control[2] - startValue[2]) + 2 * alpha * (endValue[2] - control[2]),
+    ],
+  };
+}
+
 function sampleChannelValue(channel: AnimationChannel, time: number) {
   return channel.valueType === "number"
     ? sampleNumberChannel(channel.keyframes, time)
@@ -300,13 +369,18 @@ export function applyAnimationToProjectState(
         return;
       }
       const object = ensureObjectClone(nextObjects, objectCloneFlags, objectIndex);
+      let trajectoryTangent: Vec3 | undefined;
       binding.channels.forEach((channel) => {
-        const sampledValue = sampleChannelValue(channel, time);
+        const trajectorySample = channel.path === "position"
+          ? sampleObjectTrajectory(binding, channel, time)
+          : undefined;
+        const sampledValue = trajectorySample?.position ?? sampleChannelValue(channel, time);
         if (sampledValue === undefined) {
           return;
         }
         if (channel.path === "position" && isVec3Value(sampledValue)) {
           object.position = sampledValue;
+          trajectoryTangent = trajectorySample?.tangent;
         }
         if (channel.path === "rotation" && isVec3Value(sampledValue)) {
           object.rotation = sampledValue;
@@ -331,6 +405,13 @@ export function applyAnimationToProjectState(
           );
         }
       });
+      if (trajectoryTangent && Math.hypot(trajectoryTangent[0], trajectoryTangent[2]) > 0.0001) {
+        object.rotation = [
+          object.rotation[0],
+          Math.atan2(trajectoryTangent[0], trajectoryTangent[2]) + Math.PI / 2,
+          object.rotation[2],
+        ];
+      }
       return;
     }
 
@@ -374,17 +455,16 @@ export function upsertAnimationCameraCut(
 ) {
   const nextStartTime = clampAnimationTime(time, duration, fps);
   const nextDuration = clampAnimationDuration(duration);
-  const minLength = MIN_CAMERA_CLIP_FRAMES / clampAnimationFps(fps);
+  const frameDuration = 1 / clampAnimationFps(fps);
   const existingIndex = cameraCuts.findIndex(
-    (cut) => Math.abs(getCameraCutStart(cut) - nextStartTime) < 0.0001,
+    (cut) => Math.abs(getCameraCutStart(cut) - nextStartTime) < frameDuration / 2,
   );
-  const defaultStartTime = cameraCuts.length ? nextStartTime : 0;
-  const defaultEndTime = nextDuration;
   const nextCut: AnimationCameraCut = {
     id: existingIndex >= 0 ? cameraCuts[existingIndex].id : `camera_cut_${crypto.randomUUID()}`,
     cameraId,
-    startTime: Math.min(defaultStartTime, nextDuration - minLength),
-    endTime: defaultEndTime,
+    startTime: nextStartTime,
+    endTime: nextStartTime,
+    time: nextStartTime,
   };
   if (existingIndex < 0) {
     return normalizeCameraCuts([...cameraCuts, nextCut], nextDuration, fps);
@@ -402,32 +482,56 @@ export function normalizeCameraCuts(
   fps: number,
 ) {
   const nextDuration = clampAnimationDuration(duration);
-  const minLength = MIN_CAMERA_CLIP_FRAMES / clampAnimationFps(fps);
-  const ordered = sortCameraCuts(cameraCuts)
+  const frameDuration = 1 / clampAnimationFps(fps);
+  const ordered = cameraCuts
     .map((cut) => {
       const startTime = clampAnimationTime(getCameraCutStart(cut), nextDuration, fps);
-      const rawEndTime = cut.endTime === undefined ? nextDuration : cut.endTime;
-      const endTime = Math.min(
-        nextDuration,
-        Math.max(startTime + minLength, clampAnimationTime(rawEndTime, nextDuration, fps)),
-      );
       return {
         id: cut.id,
         cameraId: cut.cameraId,
         startTime,
-        endTime,
+        endTime: startTime,
+        time: startTime,
       };
     })
-    .filter((cut) => cut.endTime - cut.startTime >= minLength - 0.0001);
+    .sort((left, right) => left.startTime - right.startTime);
 
-  return ordered.map((cut, index) => {
-    const nextCut = ordered[index + 1];
-    if (!nextCut) {
-      return cut;
+  const occupiedTimes = new Set<string>();
+  return ordered.map((cut) => {
+    let startTime = cut.startTime;
+    let timeKey = startTime.toFixed(4);
+    if (occupiedTimes.has(timeKey)) {
+      for (let offset = 1; offset <= Math.ceil(nextDuration / frameDuration) + 1; offset += 1) {
+        const rightTime = clampAnimationTime(
+          cut.startTime + offset * frameDuration,
+          nextDuration,
+          fps,
+        );
+        const rightKey = rightTime.toFixed(4);
+        if (!occupiedTimes.has(rightKey)) {
+          startTime = rightTime;
+          timeKey = rightKey;
+          break;
+        }
+        const leftTime = clampAnimationTime(
+          cut.startTime - offset * frameDuration,
+          nextDuration,
+          fps,
+        );
+        const leftKey = leftTime.toFixed(4);
+        if (!occupiedTimes.has(leftKey)) {
+          startTime = leftTime;
+          timeKey = leftKey;
+          break;
+        }
+      }
     }
+    occupiedTimes.add(timeKey);
     return {
       ...cut,
-      endTime: Math.min(cut.endTime, Math.max(cut.startTime + minLength, nextCut.startTime)),
+      startTime,
+      endTime: startTime,
+      time: startTime,
     };
   });
 }
@@ -554,21 +658,17 @@ export function moveCameraCuts(
     return cameraCuts;
   }
   const nextDuration = clampAnimationDuration(duration);
-  const minLength = MIN_CAMERA_CLIP_FRAMES / clampAnimationFps(fps);
   const normalized = normalizeCameraCuts(cameraCuts, nextDuration, fps);
   const nextCuts = normalized.map((cut) => {
     if (!cutIds.has(cut.id)) {
       return cut;
     }
-    const length = Math.max(minLength, cut.endTime - cut.startTime);
-    const startTime = Math.min(
-      nextDuration - length,
-      Math.max(0, clampAnimationTime(nextTime, nextDuration, fps)),
-    );
+    const startTime = Math.max(0, clampAnimationTime(nextTime, nextDuration, fps));
     return {
       ...cut,
       startTime,
-      endTime: startTime + length,
+      endTime: startTime,
+      time: startTime,
     };
   });
   return normalizeCameraCuts(nextCuts, nextDuration, fps);
@@ -583,7 +683,6 @@ export function resizeCameraCut(
   fps: number,
 ) {
   const nextDuration = clampAnimationDuration(duration);
-  const minLength = MIN_CAMERA_CLIP_FRAMES / clampAnimationFps(fps);
   const nextTime = clampAnimationTime(time, nextDuration, fps);
   const normalized = normalizeCameraCuts(cameraCuts, nextDuration, fps);
   return normalizeCameraCuts(
@@ -591,15 +690,11 @@ export function resizeCameraCut(
       if (cut.id !== cutId) {
         return cut;
       }
-      if (edge === "start") {
-        return {
-          ...cut,
-          startTime: Math.min(nextTime, cut.endTime - minLength),
-        };
-      }
       return {
         ...cut,
-        endTime: Math.max(nextTime, cut.startTime + minLength),
+        startTime: nextTime,
+        endTime: nextTime,
+        time: nextTime,
       };
     }),
     nextDuration,

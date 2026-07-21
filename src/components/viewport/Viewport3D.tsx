@@ -29,7 +29,7 @@ import {
 } from "../../three/cameraRig";
 import {
   extractRigFromScene,
-  loadGlbFromFile,
+  loadSceneFromFile,
   normalizeImportedScene,
 } from "../../three/glbLoader";
 import {
@@ -75,6 +75,9 @@ export function Viewport3D() {
     Array<{ id: string; label: string; x: number; y: number; active: boolean }>
   >([]);
   const cameraPreviewActive = useProjectStore((state) => state.cameraPreviewActive);
+  const setCameraPreviewActive = useProjectStore(
+    (state) => state.setCameraPreviewActive,
+  );
   const outputFrame = useProjectStore((state) => state.outputFrame);
 
   useEffect(() => {
@@ -119,6 +122,26 @@ export function Viewport3D() {
     const projectedSelectionPoint = new THREE.Vector3();
     const cameraRigs = new Map<string, THREE.Object3D>();
     const objectBoundsHelpers = new Map<string, THREE.BoxHelper>();
+    const groupBoundsHelpers = new Map<string, THREE.Box3Helper>();
+    const groupTransformProxies = new Map<string, THREE.Group>();
+    const groupTransformStarts = new Map<string, {
+      position: THREE.Vector3;
+      rotation: THREE.Euler;
+      scale: THREE.Vector3;
+      objects: Map<string, { position: Vec3; rotation: Vec3; scale: Vec3 }>;
+      cameras: Map<string, { position: Vec3; rotation: Vec3 }>;
+    }>();
+    const trajectorySegments = new Map<string, {
+      line: THREE.Line;
+      control: THREE.Mesh;
+      start: THREE.Vector3;
+      end: THREE.Vector3;
+      bindingId: string;
+      startKeyframeId: string;
+      endKeyframeId: string;
+    }>();
+    let selectedTrajectorySegmentId: string | undefined;
+    let selectedTrajectoryInfo: { targetId: string; startTime: number; endTime: number } | undefined;
     let activeCameraAimId: string | undefined;
     let panoramaTexture: THREE.Texture | undefined;
     let loadedPanoramaAssetId: string | undefined;
@@ -157,8 +180,20 @@ export function Viewport3D() {
     transformControls.addEventListener("dragging-changed", (event) => {
       draggingRef.current = Boolean(event.value);
       controls.enabled = !event.value;
+      const state = useProjectStore.getState();
+      if (event.value && state.activeGroupId) {
+        const proxy = groupTransformProxies.get(state.activeGroupId);
+        if (proxy) {
+          groupTransformStarts.set(state.activeGroupId, {
+            position: proxy.position.clone(),
+            rotation: proxy.rotation.clone(),
+            scale: proxy.scale.clone(),
+            objects: new Map(state.objects.filter((item) => item.groupId === state.activeGroupId).map((item) => [item.id, { position: [...item.position] as Vec3, rotation: [...item.rotation] as Vec3, scale: [...item.scale] as Vec3 }])),
+            cameras: new Map(state.cameras.filter((item) => item.groupId === state.activeGroupId).map((item) => [item.id, { position: [...item.position] as Vec3, rotation: [...item.rotation] as Vec3 }])),
+          });
+        }
+      }
       if (!event.value) {
-        const state = useProjectStore.getState();
         state.objects.forEach(applyObjectState);
         syncObjectBounds();
         syncCameraRigs(state.cameras);
@@ -175,7 +210,54 @@ export function Viewport3D() {
       const cameraAimId = object?.userData.workbenchCameraAimId;
       const boneId = object?.userData.workbenchBoneId;
       const ikChainId = object?.userData.workbenchIkChainId;
+      const groupId = object?.userData.workbenchGroupId;
+      const trajectoryControlId = object?.userData.workbenchTrajectoryControlId;
       if (!object) {
+        return;
+      }
+      if (typeof trajectoryControlId === "string") {
+        const segment = trajectorySegments.get(trajectoryControlId);
+        if (segment) {
+          segment.control.userData.hasMoved = true;
+          segment.control.position.copy(object.position);
+          const curve = new THREE.QuadraticBezierCurve3(segment.start, object.position, segment.end);
+          (segment.line.geometry as THREE.BufferGeometry).setFromPoints(curve.getPoints(24));
+          useProjectStore.getState().setAnimationTrajectoryControlPoint(
+            segment.bindingId,
+            segment.startKeyframeId,
+            segment.endKeyframeId,
+            [object.position.x, object.position.y, object.position.z],
+          );
+        }
+        return;
+      }
+      if (typeof groupId === "string") {
+        const start = groupTransformStarts.get(groupId);
+        if (!start) return;
+        const store = useProjectStore.getState();
+        const positionDelta = object.position.clone().sub(start.position);
+        const rotationDelta = new THREE.Euler(
+          object.rotation.x - start.rotation.x,
+          object.rotation.y - start.rotation.y,
+          object.rotation.z - start.rotation.z,
+        );
+        store.objects.filter((item) => item.groupId === groupId).forEach((item) => {
+          const original = start.objects.get(item.id);
+          if (!original) return;
+          store.updateObjectTransform(item.id, {
+            position: [original.position[0] + positionDelta.x, original.position[1] + positionDelta.y, original.position[2] + positionDelta.z],
+            rotation: [original.rotation[0] + rotationDelta.x, original.rotation[1] + rotationDelta.y, original.rotation[2] + rotationDelta.z],
+            scale: [original.scale[0] * object.scale.x, original.scale[1] * object.scale.y, original.scale[2] * object.scale.z],
+          });
+        });
+        store.cameras.filter((item) => item.groupId === groupId).forEach((item) => {
+          const original = start.cameras.get(item.id);
+          if (!original) return;
+          store.updateCamera(item.id, {
+            position: [original.position[0] + positionDelta.x, original.position[1] + positionDelta.y, original.position[2] + positionDelta.z],
+            rotation: [original.rotation[0] + rotationDelta.x, original.rotation[1] + rotationDelta.y, original.rotation[2] + rotationDelta.z],
+          });
+        });
         return;
       }
       if (typeof cameraAimId === "string") {
@@ -334,8 +416,29 @@ export function Viewport3D() {
     const placeholder = createPlaceholderCharacter();
     placeholder.position.set(0, 0, 0);
     placeholder.userData.workbenchObjectId = "object_character_a";
+    placeholder.traverse((child) => {
+      child.userData.workbenchObjectId = "object_character_a";
+    });
     worldRoot.add(placeholder);
     sceneRegistry.registerObject("object_character_a", placeholder);
+    skeletonRegistry.register("object_character_a", placeholder);
+    const placeholderRig = extractRigFromScene(placeholder);
+    if (placeholderRig) {
+      useProjectStore.getState().updateObject("object_character_a", {
+        rig: {
+          ...placeholderRig,
+          showSkeleton: true,
+          ikChains: placeholderRig.ikChains.map((chain) => ({
+            ...chain,
+            targetPosition:
+              skeletonRegistry.getBoneWorldPosition(
+                "object_character_a",
+                chain.effectorBoneId,
+              ) ?? chain.targetPosition,
+          })),
+        },
+      });
+    }
 
     const resize = () => {
       const width = container.clientWidth;
@@ -462,6 +565,38 @@ export function Viewport3D() {
             .getState()
             .updateObjectMetrics(objectState.id, { actualDimensions: nextDimensions });
         }
+      });
+
+      const groups = storeRef.current.groups;
+      const activeGroupId = storeRef.current.activeGroupId;
+      const currentGroupIds = new Set(groups.map((group) => group.id));
+      Array.from(groupBoundsHelpers.entries()).forEach(([groupId, helper]) => {
+        if (!currentGroupIds.has(groupId)) {
+          helper.parent?.remove(helper);
+          groupBoundsHelpers.delete(groupId);
+        }
+      });
+      groups.forEach((group) => {
+        const groupObjects = storeRef.current.objects
+          .filter((item) => item.groupId === group.id)
+          .map((item) => sceneRegistry.getObject(item.id))
+          .filter((item): item is THREE.Object3D => Boolean(item));
+        const groupCameras = storeRef.current.cameras
+          .filter((item) => item.groupId === group.id)
+          .map((item) => cameraRigs.get(item.id))
+          .filter((item): item is THREE.Object3D => Boolean(item));
+        if (!groupObjects.length && !groupCameras.length) return;
+        const groupBox = new THREE.Box3();
+        [...groupObjects, ...groupCameras].forEach((item) => groupBox.expandByObject(item));
+        let helper = groupBoundsHelpers.get(group.id);
+        if (!helper) {
+          helper = new THREE.Box3Helper(groupBox, 0x56a4ff);
+          helper.renderOrder = 20;
+          scene.add(helper);
+          groupBoundsHelpers.set(group.id, helper);
+        }
+        helper.box.copy(groupBox);
+        helper.visible = activeGroupId === group.id;
       });
     };
 
@@ -703,7 +838,11 @@ export function Viewport3D() {
       }
       if (matched.type === "object") {
         activeCameraAimId = undefined;
-        useProjectStore.getState().setActiveObject(matched.id);
+        if (event.metaKey || event.ctrlKey) {
+          useProjectStore.getState().toggleAssetSelection(matched.id, "object", true);
+        } else {
+          useProjectStore.getState().setActiveObject(matched.id);
+        }
         return;
       }
       if (matched.type === "bone") {
@@ -724,7 +863,11 @@ export function Viewport3D() {
         return;
       }
       activeCameraAimId = undefined;
-      useProjectStore.getState().setActiveCamera(matched.id);
+      if (event.metaKey || event.ctrlKey) {
+        useProjectStore.getState().toggleAssetSelection(matched.id, "camera", true);
+      } else {
+        useProjectStore.getState().setActiveCamera(matched.id);
+      }
     };
 
     const handlePointerDown = (event: PointerEvent) => {
@@ -743,10 +886,6 @@ export function Viewport3D() {
         transformControls.rotationSnap = null;
         transformControls.scaleSnap = null;
       }
-      if (state.cameraPreviewActive) {
-        transformControls.detach();
-        return;
-      }
       const activeObjectId = state.activeObjectId;
       const activeObject = activeObjectId
         ? state.objects.find((object) => object.id === activeObjectId)
@@ -754,6 +893,46 @@ export function Viewport3D() {
       const targetObject = activeObjectId
         ? sceneRegistry.getObject(activeObjectId)
         : undefined;
+
+      if (state.activeGroupId) {
+        const groupId = state.activeGroupId;
+        const members = [
+          ...state.objects.filter((item) => item.groupId === groupId).map((item) => sceneRegistry.getObject(item.id)),
+          ...state.cameras.filter((item) => item.groupId === groupId).map((item) => cameraRigs.get(item.id)),
+        ].filter((item): item is THREE.Object3D => Boolean(item));
+        if (!members.length) {
+          transformControls.detach();
+          return;
+        }
+        const groupBox = new THREE.Box3();
+        members.forEach((item) => groupBox.expandByObject(item));
+        let proxy = groupTransformProxies.get(groupId);
+        if (!proxy) {
+          proxy = new THREE.Group();
+          proxy.userData.workbenchGroupId = groupId;
+          scene.add(proxy);
+          groupTransformProxies.set(groupId, proxy);
+        }
+        if (!draggingRef.current || transformControls.object !== proxy) {
+          groupBox.getCenter(proxy.position);
+          proxy.rotation.set(0, 0, 0);
+          proxy.scale.set(1, 1, 1);
+        }
+        if (transformControls.object !== proxy) transformControls.attach(proxy);
+        transformControls.setMode(state.transformMode);
+        transformControls.space = "world";
+        return;
+      }
+
+      const activeTrajectory = selectedTrajectorySegmentId
+        ? trajectorySegments.get(selectedTrajectorySegmentId)
+        : undefined;
+      if (activeTrajectory) {
+        if (transformControls.object !== activeTrajectory.control) transformControls.attach(activeTrajectory.control);
+        transformControls.setMode("translate");
+        transformControls.space = "world";
+        return;
+      }
 
       if (activeObjectId) {
         if (!targetObject || !activeObject || activeObject.locked || !activeObject.visible) {
@@ -797,6 +976,11 @@ export function Viewport3D() {
         }
         transformControls.setMode(state.transformMode);
         transformControls.space = "world";
+        return;
+      }
+
+      if (state.cameraPreviewActive) {
+        transformControls.detach();
         return;
       }
 
@@ -935,13 +1119,18 @@ export function Viewport3D() {
       sampled.objects.forEach(applyObjectState);
       syncCameraRigs(sampled.cameras);
       syncObjectBounds();
+      const visibleCameraIds = new Set(
+        sampled.cameras.filter((item) => item.visible).map((item) => item.id),
+      );
       const cameraId = resolvePlaybackCameraId(
         state.animation.cameraCuts,
         time,
-        state.activeCameraId,
+        state.cameraPreviewActive ? state.activeCameraId : undefined,
+        visibleCameraIds,
       );
-      const shotCamera =
-        sampled.cameras.find((item) => item.id === cameraId) ?? sampled.cameras[0];
+      const shotCamera = cameraId
+        ? sampled.cameras.find((item) => item.id === cameraId)
+        : undefined;
       if (shotCamera) {
         applyCameraStateToPerspectiveCamera(
           camera,
@@ -976,13 +1165,14 @@ export function Viewport3D() {
 
     const handleGlbImport = async (event: Event) => {
       const file = (event as CustomEvent<File>).detail;
-      if (!file.name.toLowerCase().endsWith(".glb")) {
-        useProjectStore.getState().setImportError("只支持导入 .glb 文件");
+      const extension = file.name.split(".").pop()?.toLowerCase();
+      if (!extension || !["glb", "obj"].includes(extension)) {
+        useProjectStore.getState().setImportError("支持导入 .glb、.obj 文件；3DGS 请先转换为 .glb");
         return;
       }
 
       try {
-        const { objectUrl, scene: importedScene } = await loadGlbFromFile(file);
+        const { objectUrl, scene: importedScene } = await loadSceneFromFile(file);
         normalizeImportedScene(importedScene);
         const id = crypto.randomUUID();
         const objectId = `object_${id}`;
@@ -994,7 +1184,7 @@ export function Viewport3D() {
         worldRoot.add(importedScene);
         sceneRegistry.registerObject(objectId, importedScene);
         skeletonRegistry.register(objectId, importedScene);
-        const rig = extractRigFromScene(importedScene);
+        const rig = extension === "glb" ? extractRigFromScene(importedScene) : undefined;
         const resolvedRig = rig
           ? {
               ...rig,
@@ -1019,7 +1209,7 @@ export function Viewport3D() {
           {
             id: objectId,
             assetId,
-            name: file.name.replace(/\.glb$/i, ""),
+            name: file.name.replace(/\.(glb|obj)$/i, ""),
             type: "model",
             visible: true,
             locked: false,
@@ -1062,6 +1252,19 @@ export function Viewport3D() {
       worldRoot.add(object);
       sceneRegistry.registerObject(objectId, object);
       skeletonRegistry.register(objectId, object);
+      const rig = extractRigFromScene(object);
+      const resolvedRig = rig
+        ? {
+            ...rig,
+            showSkeleton: true,
+            ikChains: rig.ikChains.map((chain) => ({
+              ...chain,
+              targetPosition:
+                skeletonRegistry.getBoneWorldPosition(objectId, chain.effectorBoneId) ??
+                chain.targetPosition,
+            })),
+          }
+        : undefined;
       useProjectStore.getState().addSceneObject({
         id: objectId,
         name: config.name,
@@ -1072,6 +1275,7 @@ export function Viewport3D() {
         position: [object.position.x, object.position.y, object.position.z],
         rotation: [object.rotation.x, object.rotation.y, object.rotation.z],
         scale: [object.scale.x, object.scale.y, object.scale.z],
+        rig: resolvedRig,
       });
     };
 
@@ -1252,6 +1456,12 @@ export function Viewport3D() {
       store.setAnimationPlaying(false);
       const exportState = useProjectStore.getState();
       let recordingStream: MediaStream | undefined;
+      let exportCancelled = false;
+      let currentExportTime = originalTime;
+      const handleExportCancel = () => {
+        exportCancelled = true;
+      };
+      window.addEventListener("animation-export-cancel", handleExportCancel);
 
       const fallbackToJson = () => {
         const payload = buildAnimationExportPayload({
@@ -1296,8 +1506,12 @@ export function Viewport3D() {
 
         recorder.start();
         for (let frame = range.startFrame; frame <= range.endFrame; frame += 1) {
+          if (exportCancelled) {
+            throw new Error("EXPORT_CANCELLED");
+          }
           const frameIndex = frame - range.startFrame + 1;
-          renderSampledAnimationFrame(frame / exportState.animation.fps, exportState);
+          currentExportTime = frame / exportState.animation.fps;
+          renderSampledAnimationFrame(currentExportTime, exportState);
           recording.draw();
           track.requestFrame?.();
           window.dispatchEvent(
@@ -1325,20 +1539,25 @@ export function Viewport3D() {
         );
       } catch (error) {
         window.dispatchEvent(
-          new CustomEvent("animation-export-error", {
-            detail: {
-              message:
-                error instanceof Error
-                  ? `动画导出失败：${error.message}`
-                  : "动画导出失败",
-            },
-          }),
+          error instanceof Error && error.message === "EXPORT_CANCELLED"
+            ? new CustomEvent("animation-export-cancelled")
+            : new CustomEvent("animation-export-error", {
+                detail: {
+                  message:
+                    error instanceof Error
+                      ? `动画导出失败：${error.message}`
+                      : "动画导出失败",
+                },
+              }),
         );
       } finally {
+        window.removeEventListener("animation-export-cancel", handleExportCancel);
         recordingStream?.getTracks().forEach((item) => item.stop());
         exportInProgress = false;
-        useProjectStore.getState().setAnimationTime(originalTime);
-        useProjectStore.getState().setAnimationPlaying(wasPlaying);
+        useProjectStore
+          .getState()
+          .setAnimationTime(exportCancelled ? currentExportTime : originalTime);
+        useProjectStore.getState().setAnimationPlaying(exportCancelled ? false : wasPlaying);
         restoreSceneFromStore();
         camera.position.copy(originalPose.position);
         camera.rotation.copy(originalPose.rotation);
@@ -1354,6 +1573,103 @@ export function Viewport3D() {
       skeletonRegistry.disposeAll();
       sceneRegistry.disposeAll();
       useProjectStore.getState().releaseRuntimeAssets();
+    };
+
+    const syncTrajectorySegments = () => {
+      const state = storeRef.current;
+      const selectedId = selectedTrajectorySegmentId;
+      trajectorySegments.forEach((segment, id) => {
+        segment.line.visible = id === selectedId;
+        segment.control.visible = id === selectedId;
+      });
+      if (!selectedId) return;
+      if (!selectedTrajectoryInfo) return;
+      const targetType = selectedTrajectoryInfo.targetId.startsWith("object-row:") ? "object" : "camera";
+      const targetId = selectedTrajectoryInfo.targetId.split(":")[1];
+      const startTime = selectedTrajectoryInfo.startTime;
+      const endTime = selectedTrajectoryInfo.endTime;
+      const binding = state.animation.bindings.find((item) => item.targetType === targetType && item.targetId === targetId);
+      if (!binding) return;
+      const positionChannel = binding?.channels.find((channel) => channel.path === "position");
+      const startKeyframe = positionChannel?.keyframes.find((item) => Math.abs(item.time - startTime) < 0.0001);
+      const endKeyframe = positionChannel?.keyframes.find((item) => Math.abs(item.time - endTime) < 0.0001);
+      if (!startKeyframe || !endKeyframe || !Array.isArray(startKeyframe.value) || !Array.isArray(endKeyframe.value)) return;
+      const start = new THREE.Vector3(...startKeyframe.value);
+      const end = new THREE.Vector3(...endKeyframe.value);
+      const savedSegment = binding?.trajectorySegments?.find(
+        (item) =>
+          item.startKeyframeId === startKeyframe.id &&
+          item.endKeyframeId === endKeyframe.id,
+      );
+      let segment = trajectorySegments.get(selectedId);
+      if (!segment) {
+        const control = new THREE.Mesh(new THREE.SphereGeometry(0.1, 16, 10), new THREE.MeshBasicMaterial({ color: 0x56a4ff, depthTest: false }));
+        control.userData.workbenchTrajectoryControlId = selectedId;
+        const line = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x56a4ff, depthTest: false, transparent: true, opacity: 0.92 }));
+        line.renderOrder = 30;
+        control.renderOrder = 31;
+        scene.add(line, control);
+        segment = {
+          line,
+          control,
+          start: start.clone(),
+          end: end.clone(),
+          bindingId: binding.id,
+          startKeyframeId: startKeyframe.id,
+          endKeyframeId: endKeyframe.id,
+        };
+        trajectorySegments.set(selectedId, segment);
+      }
+      segment.start.copy(start);
+      segment.end.copy(end);
+      segment.bindingId = binding.id;
+      segment.startKeyframeId = startKeyframe.id;
+      segment.endKeyframeId = endKeyframe.id;
+      if (savedSegment) {
+        segment.control.position.set(...savedSegment.controlPoint);
+        segment.control.userData.hasMoved = true;
+      } else if (!segment.control.userData.hasMoved) {
+        segment.control.position.copy(start).add(end).multiplyScalar(0.5);
+      }
+      const curve = new THREE.QuadraticBezierCurve3(segment.start, segment.control.position, segment.end);
+      segment.line.geometry.dispose();
+      segment.line.geometry = new THREE.BufferGeometry().setFromPoints(curve.getPoints(24));
+      segment.line.visible = true;
+      segment.control.visible = true;
+      if (transformControls.object !== segment.control) {
+        transformControls.attach(segment.control);
+        transformControls.setMode("translate");
+        transformControls.space = "world";
+      }
+    };
+
+    const handleTrajectoryEditChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ id?: string; reset?: boolean }>).detail;
+      if (!detail.id) return;
+      if (detail.reset) {
+        const segment = trajectorySegments.get(detail.id);
+        if (segment) {
+          segment.control.position.copy(segment.start).add(segment.end).multiplyScalar(0.5);
+          segment.control.userData.hasMoved = false;
+          useProjectStore.getState().setAnimationTrajectoryControlPoint(
+            segment.bindingId,
+            segment.startKeyframeId,
+            segment.endKeyframeId,
+            [segment.control.position.x, segment.control.position.y, segment.control.position.z],
+          );
+        }
+        return;
+      }
+      selectedTrajectorySegmentId = detail.id;
+      const trajectoryDetail = (event as CustomEvent<{ id?: string; targetId?: string; startTime?: number; endTime?: number }>).detail;
+      if (trajectoryDetail.targetId && trajectoryDetail.startTime !== undefined && trajectoryDetail.endTime !== undefined) {
+        selectedTrajectoryInfo = {
+          targetId: trajectoryDetail.targetId,
+          startTime: trajectoryDetail.startTime,
+          endTime: trajectoryDetail.endTime,
+        };
+      }
+      syncTransformControls();
     };
 
     let animationFrame = 0;
@@ -1385,7 +1701,10 @@ export function Viewport3D() {
         ? resolvePlaybackCameraId(
             storeRef.current.animation.cameraCuts,
             storeRef.current.animation.currentTime,
-            storeRef.current.activeCameraId,
+            storeRef.current.cameraPreviewActive
+              ? storeRef.current.activeCameraId
+              : undefined,
+            new Set(sceneCameras.filter((item) => item.visible).map((item) => item.id)),
           )
         : storeRef.current.activeCameraId;
       const playbackCamera = sceneCameras.find(
@@ -1466,6 +1785,7 @@ export function Viewport3D() {
         updateViewportLabels();
       }
       syncObjectBounds();
+      syncTrajectorySegments();
 
       animationFrame = requestAnimationFrame(animate);
     };
@@ -1480,6 +1800,7 @@ export function Viewport3D() {
     window.addEventListener("viewport-reset-view-request", handleViewReset);
     window.addEventListener("snapshot-export-request", handleSnapshotExport);
     window.addEventListener("animation-export-request", handleAnimationExport);
+    window.addEventListener("trajectory-edit-change", handleTrajectoryEditChange);
     window.addEventListener("beforeunload", handleBeforeUnload);
     renderer.domElement.addEventListener("pointerdown", handlePointerDown);
     renderer.domElement.addEventListener("pointerup", handleViewportSelection);
@@ -1502,6 +1823,16 @@ export function Viewport3D() {
       window.removeEventListener("viewport-reset-view-request", handleViewReset);
       window.removeEventListener("snapshot-export-request", handleSnapshotExport);
       window.removeEventListener("animation-export-request", handleAnimationExport);
+      window.removeEventListener("trajectory-edit-change", handleTrajectoryEditChange);
+      trajectorySegments.forEach((segment) => {
+        segment.line.geometry.dispose();
+        (segment.line.material as THREE.Material).dispose();
+        segment.control.geometry.dispose();
+        (segment.control.material as THREE.Material).dispose();
+        segment.line.parent?.remove(segment.line);
+        segment.control.parent?.remove(segment.control);
+      });
+      trajectorySegments.clear();
       window.removeEventListener("beforeunload", handleBeforeUnload);
       renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
       renderer.domElement.removeEventListener("pointerup", handleViewportSelection);
@@ -1513,6 +1844,10 @@ export function Viewport3D() {
         (helper.material as THREE.Material).dispose();
       });
       objectBoundsHelpers.clear();
+      Array.from(groupBoundsHelpers.values()).forEach((helper) => helper.parent?.remove(helper));
+      groupBoundsHelpers.clear();
+      groupTransformProxies.forEach((proxy) => proxy.parent?.remove(proxy));
+      groupTransformProxies.clear();
       Array.from(cameraRigs.values()).forEach(disposeCameraRig);
       cameraRigs.clear();
       skeletonRegistry.disposeAll();
@@ -1538,11 +1873,23 @@ export function Viewport3D() {
         ) : null}
         <button
           type="button"
+          disabled={cameraPreviewActive}
           onClick={() => window.dispatchEvent(new Event("viewport-reset-view-request"))}
         >
           重置视角
         </button>
       </div>
+      {cameraPreviewActive ? (
+        <div className="camera-lock-dialog" role="dialog" aria-live="polite">
+          <div>
+            <strong>机位视角已锁定</strong>
+            <span>关闭后退出机位视角，回到自由视角</span>
+          </div>
+          <button type="button" onClick={() => setCameraPreviewActive(false)}>
+            退出
+          </button>
+        </div>
+      ) : null}
       <div className="viewport-label-layer">
         {viewportLabels.map((item) => (
           <div

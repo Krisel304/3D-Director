@@ -54,7 +54,7 @@ export function WorldInspector() {
     <section className="panel-block world-panel">
       <div className="panel-heading object-heading">
         <div>
-          <h2>3D 世界属性</h2>
+          <h2>场景属性</h2>
           <p>未选中对象或机位时，编辑场景与环境</p>
         </div>
       </div>

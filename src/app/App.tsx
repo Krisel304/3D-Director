@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Component, type ErrorInfo, type ReactNode, useEffect, useState } from "react";
 import { BottomToolbar } from "../components/layout/BottomToolbar";
 import { LeftPanel } from "../components/layout/LeftPanel";
 import { RightPanel } from "../components/layout/RightPanel";
@@ -7,10 +7,71 @@ import { TopBar } from "../components/layout/TopBar";
 import { Viewport3D } from "../components/viewport/Viewport3D";
 import { useProjectStore } from "../store/projectStore";
 
-export function App() {
+type AppErrorBoundaryState = {
+  errorMessage: string;
+};
+
+class AppErrorBoundary extends Component<
+  { children: ReactNode },
+  AppErrorBoundaryState
+> {
+  state: AppErrorBoundaryState = {
+    errorMessage: "",
+  };
+
+  static getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
+    return {
+      errorMessage: error instanceof Error ? error.message : "页面运行出错",
+    };
+  }
+
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    console.error("Workbench render error", error, info);
+  }
+
+  render() {
+    if (this.state.errorMessage) {
+      return (
+        <main className="workbench-shell workbench-error-shell">
+          <div className="workbench-error-card" role="alert">
+            <strong>页面运行异常</strong>
+            <span>{this.state.errorMessage}</span>
+          </div>
+        </main>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+function WorkbenchApp() {
   const [timelineExpanded, setTimelineExpanded] = useState(false);
   const [timelineHeight, setTimelineHeight] = useState(420);
+  const [runtimeError, setRuntimeError] = useState("");
   const isPlaying = useProjectStore((state) => state.animation.isPlaying);
+
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      setRuntimeError(event.message || "页面运行出错");
+    };
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      setRuntimeError(
+        reason instanceof Error
+          ? reason.message
+          : typeof reason === "string"
+            ? reason
+            : "页面运行出错",
+      );
+    };
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isPlaying) {
@@ -41,12 +102,30 @@ export function App() {
             expanded={timelineExpanded}
             height={timelineHeight}
             onHeightChange={setTimelineHeight}
-            onToggle={() => setTimelineExpanded((current) => !current)}
           />
-          <BottomToolbar lifted={timelineExpanded} liftedHeight={timelineHeight} />
+          <BottomToolbar
+            lifted={timelineExpanded}
+            liftedHeight={timelineHeight}
+            timelineExpanded={timelineExpanded}
+            onTimelineToggle={() => setTimelineExpanded((current) => !current)}
+          />
         </div>
         <RightPanel />
       </section>
+      {runtimeError ? (
+        <div className="runtime-error-overlay" role="alert">
+          <strong>页面运行异常</strong>
+          <span>{runtimeError}</span>
+        </div>
+      ) : null}
     </main>
+  );
+}
+
+export function App() {
+  return (
+    <AppErrorBoundary>
+      <WorkbenchApp />
+    </AppErrorBoundary>
   );
 }

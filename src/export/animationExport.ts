@@ -63,6 +63,8 @@ export function buildAnimationExportPayload({
   animation,
   range,
 }: BuildAnimationExportPayloadInput) {
+  const visibleCameraIds = new Set(cameras.filter((camera) => camera.visible).map((camera) => camera.id));
+  const fallbackCameraId = cameras.find((camera) => camera.visible)?.id ?? cameras[0]?.id;
   const frames = Array.from({ length: range.frameCount }).map((_, index) => {
     const frame = range.startFrame + index;
     const time = frame / animation.fps;
@@ -73,7 +75,8 @@ export function buildAnimationExportPayload({
       cameraId: resolvePlaybackCameraId(
         animation.cameraCuts,
         time,
-        cameras[0]?.id,
+        fallbackCameraId,
+        visibleCameraIds,
       ),
     };
   });

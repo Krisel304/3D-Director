@@ -24,6 +24,40 @@ const invLinkQ = new THREE.Quaternion();
 const linkScale = new THREE.Vector3();
 const axis = new THREE.Vector3();
 const rotationQuat = new THREE.Quaternion();
+const rootPos = new THREE.Vector3();
+
+function getClampedIkTargetPosition(runtime: SkeletonRuntime, chain: IkChainRecord) {
+  const root = runtime.bones.get(chain.rootBoneId);
+  const effector = runtime.bones.get(chain.effectorBoneId);
+  const target = runtime.ikTargets.get(chain.id);
+  if (!root || !effector || !target) {
+    return undefined;
+  }
+
+  root.updateMatrixWorld(true);
+  effector.updateMatrixWorld(true);
+  rootPos.setFromMatrixPosition(root.matrixWorld);
+  targetPos.copy(target.position);
+
+  let reach = 0;
+  let current: THREE.Bone | undefined = effector;
+  while (current?.parent instanceof THREE.Bone) {
+    reach += current.position.length();
+    if (current.parent === root) {
+      break;
+    }
+    current = current.parent;
+  }
+  reach = Math.max(0.08, reach * 1.02);
+
+  const distance = targetPos.distanceTo(rootPos);
+  if (distance > reach) {
+    targetPos.sub(rootPos).setLength(reach).add(rootPos);
+    target.position.copy(targetPos);
+  }
+
+  return targetPos;
+}
 
 function createBoneHandle(objectId: string, boneId: string) {
   const mesh = new THREE.Mesh(
@@ -89,7 +123,11 @@ function solveIkChain(runtime: SkeletonRuntime, chain: IkChainRecord) {
   }
 
   runtime.root.updateMatrixWorld(true);
-  targetPos.copy(target.position);
+  const clampedTarget = getClampedIkTargetPosition(runtime, chain);
+  if (!clampedTarget) {
+    return;
+  }
+  targetPos.copy(clampedTarget);
 
   for (let iteration = 0; iteration < 4; iteration += 1) {
     let rotated = false;

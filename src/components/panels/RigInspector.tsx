@@ -210,6 +210,8 @@ export function RigInspector({
               <TransformFields
                 disabled={object.locked}
                 label="骨骼旋转"
+                max={180}
+                min={-180}
                 step={1}
                 value={toDegreesVector(selectedBone.rotation)}
                 onChange={(rotation) =>

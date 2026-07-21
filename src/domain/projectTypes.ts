@@ -131,6 +131,7 @@ export type SceneObject = {
   actualDimensions?: Vec3;
   materialOverrides?: MaterialOverride[];
   rig?: ObjectRig;
+  groupId?: string;
 };
 
 export type SceneCamera = {
@@ -146,6 +147,13 @@ export type SceneCamera = {
   mode: CameraMode;
   visible: boolean;
   locked: boolean;
+  groupId?: string;
+};
+
+export type SceneGroup = {
+  id: string;
+  name: string;
+  createdAt: number;
 };
 
 export type SnapshotRecord = {
@@ -201,6 +209,13 @@ export type AnimationBinding = {
   targetId: string;
   label: string;
   channels: AnimationChannel[];
+  trajectorySegments?: AnimationTrajectorySegment[];
+};
+
+export type AnimationTrajectorySegment = {
+  startKeyframeId: string;
+  endKeyframeId: string;
+  controlPoint: Vec3;
 };
 
 export type AnimationTimelineState = {
@@ -215,6 +230,12 @@ export type AnimationTimelineState = {
   autoKeyMode: AnimationAutoKeyMode;
   bindings: AnimationBinding[];
   cameraCuts: AnimationCameraCut[];
+};
+
+export type TimelineKeyframeSelection = {
+  id: string;
+  time: number;
+  refs: TimelineKeyframeRef[];
 };
 
 export type ProjectState = {
@@ -232,7 +253,11 @@ export type ProjectState = {
   assets: AssetRecord[];
   objects: SceneObject[];
   cameras: SceneCamera[];
+  groups: SceneGroup[];
+  activeGroupId?: string;
+  selectedAssetIds: string[];
   snapshots: SnapshotRecord[];
   animation: AnimationTimelineState;
+  selectedTimelineKeyframe?: TimelineKeyframeSelection;
   importError?: string;
 };

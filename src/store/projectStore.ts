@@ -25,6 +25,7 @@ import { defaultProject } from "../domain/defaultProject";
 import { getIkControlBones, isIkControlBoneName } from "../domain/rigUtils";
 import type {
   AssetRecord,
+  AnimationCameraCut,
   BoneRecord,
   IkChainRecord,
   MaterialOverride,
@@ -32,8 +33,10 @@ import type {
   OutputFrame,
   ProjectState,
   SceneCamera,
+  SceneGroup,
   SceneObject,
   SnapshotRecord,
+  TimelineKeyframeSelection,
   TimelineKeyframeRef,
   ToolMode,
   TransformMode,
@@ -46,10 +49,33 @@ type ProjectStore = ProjectState & {
   setTransformMode: (mode: TransformMode) => void;
   setOutputFrame: (frame: OutputFrame) => void;
   clearSelection: () => void;
+  toggleAssetSelection: (assetId: string, assetType: "object" | "camera", additive?: boolean) => void;
+  selectGroup: (groupId: string) => void;
+  createGroup: () => void;
+  renameGroup: (groupId: string, name: string) => void;
+  addAssetsToGroup: (groupId: string, objectIds: string[], cameraIds: string[]) => void;
+  removeAssetsFromGroup: (groupId: string, objectIds: string[], cameraIds: string[]) => void;
+  ungroup: (groupId: string) => void;
+  removeGroup: (groupId: string) => void;
+  alignGroup: (groupId: string, mode: "center" | "top" | "bottom" | "ground") => void;
+  toggleGroupVisible: (groupId: string) => void;
+  toggleGroupLocked: (groupId: string) => void;
+  duplicateObject: (objectId: string) => void;
+  duplicateCamera: (cameraId: string) => void;
+  duplicateGroup: (groupId: string) => void;
+  setAnimationTrajectoryControlPoint: (
+    bindingId: string,
+    startKeyframeId: string,
+    endKeyframeId: string,
+    controlPoint: Vec3,
+  ) => void;
+  clearTimelineSelection: () => void;
+  setSelectedTimelineKeyframe: (selection?: TimelineKeyframeSelection) => void;
   setActiveObject: (objectId?: string) => void;
   setActiveCamera: (cameraId: string) => void;
   setCameraPreviewActive: (active: boolean) => void;
   addCamera: (camera?: Partial<SceneCamera>) => void;
+  reorderCamera: (cameraId: string, direction: -1 | 1) => void;
   updateCamera: (cameraId: string, updates: Partial<SceneCamera>) => void;
   updateWorldSettings: (updates: Partial<WorldSettings>) => void;
   setWorldPanoramaAsset: (asset?: AssetRecord) => void;
@@ -74,6 +100,7 @@ type ProjectStore = ProjectState & {
   ) => void;
   removeIkChain: (objectId: string, chainId: string) => void;
   updateObject: (objectId: string, updates: Partial<SceneObject>) => void;
+  reorderObject: (objectId: string, direction: -1 | 1) => void;
   updateObjectTransform: (
     objectId: string,
     transform: Partial<Pick<SceneObject, "position" | "rotation" | "scale">>,
@@ -95,9 +122,11 @@ type ProjectStore = ProjectState & {
   addSceneObject: (object: SceneObject) => void;
   addImportedModel: (asset: AssetRecord, object: SceneObject) => void;
   addSnapshot: (snapshot: SnapshotRecord) => void;
+  removeSnapshot: (snapshotId: string) => void;
   setAnimationTime: (time: number) => void;
   setAnimationPlaying: (playing: boolean) => void;
   toggleAnimationPlayback: () => void;
+  toggleAnimationLoop: () => void;
   setAnimationAutoKeyEnabled: (enabled: boolean) => void;
   setAnimationAutoKeyMode: (mode: ProjectState["animation"]["autoKeyMode"]) => void;
   setAnimationDuration: (duration: number) => void;
@@ -110,6 +139,7 @@ type ProjectStore = ProjectState & {
   setAnimationOutPointToCurrentTime: () => void;
   stepAnimation: (deltaSeconds: number) => void;
   captureCurrentKeyframe: () => { ok: true } | { ok: false; message: string };
+  captureSelectedAssetsKeyframes: () => { ok: true; count: number; bindings: ProjectState["animation"]["bindings"] } | { ok: false; message: string };
   addCurrentCameraCut: () => { ok: true } | { ok: false; message: string };
   addCameraCutAtTime: (cameraId: string) => { ok: true } | { ok: false; message: string };
   removeSelectedTimelineKeyframe: (refs: TimelineKeyframeRef[]) => void;
@@ -260,12 +290,79 @@ function captureCameraCutForCamera(state: ProjectState, cameraId?: string) {
   };
 }
 
+function normalizeExistingCameraCuts(
+  cameraCuts: AnimationCameraCut[],
+  duration: number,
+  fps: number,
+) {
+  return cameraCuts.map((existing) => {
+    const startTime = clampAnimationTime(
+      existing.startTime ?? existing.time ?? 0,
+      duration,
+      fps,
+    );
+    return {
+      ...existing,
+      startTime,
+      endTime: startTime,
+      time: startTime,
+    };
+  });
+}
+
+function removeTimelineTarget(
+  animation: ProjectState["animation"],
+  targetType: "object" | "camera",
+  targetId: string,
+) {
+  return {
+    ...animation,
+    bindings: animation.bindings.filter(
+      (binding) => binding.targetType !== targetType || binding.targetId !== targetId,
+    ),
+    cameraCuts:
+      targetType === "camera"
+        ? animation.cameraCuts.filter((cut) => cut.cameraId !== targetId)
+        : animation.cameraCuts,
+  };
+}
+
+function hasTimelineBinding(
+  animation: ProjectState["animation"],
+  targetType: "object" | "camera",
+  targetId: string,
+) {
+  return animation.bindings.some(
+    (binding) => binding.targetType === targetType && binding.targetId === targetId,
+  );
+}
+
+function moveItemById<T extends { id: string }>(
+  items: T[],
+  id: string,
+  direction: -1 | 1,
+) {
+  const index = items.findIndex((item) => item.id === id);
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= items.length) {
+    return items;
+  }
+  const nextItems = [...items];
+  const [item] = nextItems.splice(index, 1);
+  nextItems.splice(nextIndex, 0, item);
+  return nextItems;
+}
+
 function maybeAutoKeyObjectTransform(
   state: ProjectState,
   objectId: string,
   nextObjects: SceneObject[],
 ) {
-  if (!state.animation.autoKeyEnabled || state.activeObjectId !== objectId) {
+  if (
+    !state.animation.autoKeyEnabled ||
+    state.activeObjectId !== objectId ||
+    !hasTimelineBinding(state.animation, "object", objectId)
+  ) {
     return state.animation;
   }
   const activeObject = nextObjects.find((object) => object.id === objectId);
@@ -288,7 +385,11 @@ function maybeAutoKeyCamera(
   cameraId: string,
   nextCameras: SceneCamera[],
 ) {
-  if (!state.animation.autoKeyEnabled || state.selectedCameraId !== cameraId) {
+  if (
+    !state.animation.autoKeyEnabled ||
+    (state.selectedCameraId !== cameraId && state.activeCameraId !== cameraId) ||
+    !hasTimelineBinding(state.animation, "camera", cameraId)
+  ) {
     return state.animation;
   }
   const activeCamera = nextCameras.find((camera) => camera.id === cameraId);
@@ -312,7 +413,11 @@ function maybeAutoKeyBone(
   boneId: string,
   nextObjects: SceneObject[],
 ) {
-  if (!state.animation.autoKeyEnabled || state.activeObjectId !== objectId) {
+  if (
+    !state.animation.autoKeyEnabled ||
+    state.activeObjectId !== objectId ||
+    !hasTimelineBinding(state.animation, "object", objectId)
+  ) {
     return state.animation;
   }
   const activeObject = nextObjects.find((object) => object.id === objectId);
@@ -338,7 +443,11 @@ function maybeAutoKeyIkChain(
   chainId: string,
   nextObjects: SceneObject[],
 ) {
-  if (!state.animation.autoKeyEnabled || state.activeObjectId !== objectId) {
+  if (
+    !state.animation.autoKeyEnabled ||
+    state.activeObjectId !== objectId ||
+    !hasTimelineBinding(state.animation, "object", objectId)
+  ) {
     return state.animation;
   }
   const activeObject = nextObjects.find((object) => object.id === objectId);
@@ -386,16 +495,292 @@ function applyObjectDeltaToTargetPosition(
   return [transformedTarget.x, transformedTarget.y, transformedTarget.z];
 }
 
-export const useProjectStore = create<ProjectStore>((set) => ({
+export const useProjectStore = create<ProjectStore>((set, get) => ({
   ...defaultProject,
   setActiveTool: (tool) => set({ activeTool: tool }),
   setTransformMode: (mode) => set({ transformMode: mode, activeTool: "move" }),
   setOutputFrame: (frame) => set({ outputFrame: frame, activeTool: "aspect" }),
-  clearSelection: () => set({ activeObjectId: undefined, selectedCameraId: undefined }),
+  clearSelection: () =>
+    set({
+      activeObjectId: undefined,
+      selectedCameraId: undefined,
+      activeGroupId: undefined,
+      selectedAssetIds: [],
+    }),
+  toggleAssetSelection: (assetId, assetType, additive = false) =>
+    set((state) => {
+      const key = `${assetType}:${assetId}`;
+      const current = additive ? state.selectedAssetIds : [];
+      const next = current.includes(key)
+        ? current.filter((item) => item !== key)
+        : [...current, key];
+      const nextObjectIds = next
+        .filter((item) => item.startsWith("object:"))
+        .map((item) => item.slice(7));
+      const nextCameraIds = next
+        .filter((item) => item.startsWith("camera:"))
+        .map((item) => item.slice(7));
+      return {
+        activeObjectId: nextObjectIds.length === 1 ? nextObjectIds[0] : undefined,
+        selectedCameraId: nextCameraIds.length === 1 ? nextCameraIds[0] : undefined,
+        activeGroupId: undefined,
+        selectedTimelineKeyframe: undefined,
+        selectedAssetIds: next,
+      };
+    }),
+  selectGroup: (groupId) =>
+    set((state) => {
+      const group = state.groups.find((item) => item.id === groupId);
+      if (!group) {
+        return state;
+      }
+      const selectedAssetIds = [
+        ...state.objects
+          .filter((item) => item.groupId === groupId)
+          .map((item) => `object:${item.id}`),
+        ...state.cameras
+          .filter((item) => item.groupId === groupId)
+          .map((item) => `camera:${item.id}`),
+      ];
+      return {
+        activeGroupId: groupId,
+        selectedAssetIds,
+        activeObjectId: undefined,
+        selectedCameraId: undefined,
+        selectedTimelineKeyframe: undefined,
+      };
+    }),
+  createGroup: () =>
+    set((state) => {
+      const group: SceneGroup = {
+        id: `group_${crypto.randomUUID()}`,
+        name: `组合 ${state.groups.length + 1}`,
+        createdAt: Date.now(),
+      };
+      return { groups: [...state.groups, group], activeGroupId: group.id };
+    }),
+  renameGroup: (groupId, name) =>
+    set((state) => ({
+      groups: state.groups.map((group) =>
+        group.id === groupId ? { ...group, name: name.trim() || group.name } : group,
+      ),
+    })),
+  addAssetsToGroup: (groupId, objectIds, cameraIds) =>
+    set((state) => ({
+      objects: state.objects.map((item) =>
+        objectIds.includes(item.id) ? { ...item, groupId } : item,
+      ),
+      cameras: state.cameras.map((item) =>
+        cameraIds.includes(item.id) ? { ...item, groupId } : item,
+      ),
+      activeGroupId: groupId,
+      selectedAssetIds: [
+        ...objectIds.map((id) => `object:${id}`),
+        ...cameraIds.map((id) => `camera:${id}`),
+      ],
+      activeObjectId: undefined,
+      selectedCameraId: undefined,
+    })),
+  removeAssetsFromGroup: (groupId, objectIds, cameraIds) =>
+    set((state) => ({
+      objects: state.objects.map((item) =>
+        item.groupId === groupId && objectIds.includes(item.id)
+          ? { ...item, groupId: undefined }
+          : item,
+      ),
+      cameras: state.cameras.map((item) =>
+        item.groupId === groupId && cameraIds.includes(item.id)
+          ? { ...item, groupId: undefined }
+          : item,
+      ),
+      activeGroupId: undefined,
+      selectedAssetIds: [
+        ...objectIds.map((id) => `object:${id}`),
+        ...cameraIds.map((id) => `camera:${id}`),
+      ],
+    })),
+  ungroup: (groupId) =>
+    set((state) => ({
+      objects: state.objects.map((item) =>
+        item.groupId === groupId ? { ...item, groupId: undefined } : item,
+      ),
+      cameras: state.cameras.map((item) =>
+        item.groupId === groupId ? { ...item, groupId: undefined } : item,
+      ),
+      groups: state.groups.filter((item) => item.id !== groupId),
+      activeGroupId: undefined,
+      selectedAssetIds: [],
+    })),
+  removeGroup: (groupId) =>
+    set((state) => {
+      const objectIds = new Set(
+        state.objects.filter((item) => item.groupId === groupId).map((item) => item.id),
+      );
+      const cameraIds = new Set(
+        state.cameras.filter((item) => item.groupId === groupId).map((item) => item.id),
+      );
+      objectIds.forEach((id) => window.dispatchEvent(new CustomEvent("scene-object-remove-request", { detail: id })));
+      cameraIds.forEach((id) => window.dispatchEvent(new CustomEvent("scene-camera-remove-request", { detail: id })));
+      return {
+        objects: state.objects.filter((item) => !objectIds.has(item.id)),
+        cameras: state.cameras.filter((item) => !cameraIds.has(item.id)),
+        groups: state.groups.filter((item) => item.id !== groupId),
+        activeObjectId: undefined,
+        selectedCameraId: undefined,
+        activeCameraId: state.cameras.find((item) => !cameraIds.has(item.id))?.id,
+        activeGroupId: undefined,
+        selectedAssetIds: [],
+        animation: {
+          ...state.animation,
+          bindings: state.animation.bindings.filter(
+            (binding) =>
+              !(binding.targetType === "object" && objectIds.has(binding.targetId)) &&
+              !(binding.targetType === "camera" && cameraIds.has(binding.targetId)),
+          ),
+          cameraCuts: state.animation.cameraCuts.filter((cut) => !cameraIds.has(cut.cameraId)),
+        },
+      };
+    }),
+  alignGroup: (groupId, mode) =>
+    set((state) => {
+      const objects = state.objects.filter((item) => item.groupId === groupId);
+      const cameras = state.cameras.filter((item) => item.groupId === groupId);
+      const all = [...objects, ...cameras];
+      if (!all.length) return state;
+      const ys = all.map((item) => item.position[1]);
+      const targetY = mode === "top" ? Math.max(...ys) : mode === "bottom" || mode === "ground" ? Math.min(...ys) : ys.reduce((sum, y) => sum + y, 0) / ys.length;
+      return {
+        objects: state.objects.map((item) =>
+          item.groupId === groupId ? { ...item, position: [item.position[0], mode === "center" ? targetY : targetY, item.position[2]] as Vec3 } : item,
+        ),
+        cameras: state.cameras.map((item) =>
+          item.groupId === groupId ? { ...item, position: [item.position[0], mode === "center" ? targetY : targetY, item.position[2]] as Vec3 } : item,
+        ),
+      };
+    }),
+  toggleGroupVisible: (groupId) =>
+    set((state) => {
+      const members = state.objects.filter((item) => item.groupId === groupId);
+      const cameras = state.cameras.filter((item) => item.groupId === groupId);
+      const nextVisible = [...members.map((item) => item.visible), ...cameras.map((item) => item.visible)].some(Boolean) ? false : true;
+      return {
+        objects: state.objects.map((item) => item.groupId === groupId ? { ...item, visible: nextVisible } : item),
+        cameras: state.cameras.map((item) => item.groupId === groupId ? { ...item, visible: nextVisible } : item),
+      };
+    }),
+  toggleGroupLocked: (groupId) =>
+    set((state) => {
+      const lockStates = [
+        ...state.objects.filter((item) => item.groupId === groupId).map((item) => item.locked),
+        ...state.cameras.filter((item) => item.groupId === groupId).map((item) => item.locked),
+      ];
+      const locked = lockStates.length > 0 && lockStates.every(Boolean);
+      return {
+        objects: state.objects.map((item) => item.groupId === groupId ? { ...item, locked: !locked } : item),
+        cameras: state.cameras.map((item) => item.groupId === groupId ? { ...item, locked: !locked } : item),
+      };
+    }),
+  duplicateObject: (objectId) =>
+    set((state) => {
+      const source = state.objects.find((item) => item.id === objectId);
+      if (!source) return state;
+      const id = `object_${crypto.randomUUID()}`;
+      const clone: SceneObject = {
+        ...source,
+        id,
+        name: `${source.name} 副本`,
+        groupId: undefined,
+        position: [source.position[0] + 0.8, source.position[1], source.position[2] + 0.8],
+        rig: source.rig ? { ...source.rig, bones: source.rig.bones.map((bone) => ({ ...bone })), ikChains: source.rig.ikChains.map((chain) => ({ ...chain })) } : undefined,
+      };
+      return { objects: [...state.objects, clone], activeObjectId: id, selectedCameraId: undefined, selectedAssetIds: [`object:${id}`] };
+    }),
+  duplicateCamera: (cameraId) =>
+    set((state) => {
+      const source = state.cameras.find((item) => item.id === cameraId);
+      if (!source) return state;
+      const id = `camera_${crypto.randomUUID()}`;
+      const clone: SceneCamera = { ...source, id, name: `${source.name} 副本`, groupId: undefined, position: [source.position[0] + 0.8, source.position[1], source.position[2] + 0.8] };
+      return { cameras: [...state.cameras, clone], activeCameraId: id, selectedCameraId: id, activeObjectId: undefined, selectedAssetIds: [`camera:${id}`] };
+    }),
+  duplicateGroup: (groupId) =>
+    set((state) => {
+      const sourceGroup = state.groups.find((item) => item.id === groupId);
+      if (!sourceGroup) return state;
+      const newGroupId = `group_${crypto.randomUUID()}`;
+      const objectClones = state.objects
+        .filter((item) => item.groupId === groupId)
+        .map((item) => ({
+          ...item,
+          id: `object_${crypto.randomUUID()}`,
+          name: `${item.name} 副本`,
+          groupId: newGroupId,
+          position: [item.position[0] + 0.8, item.position[1], item.position[2] + 0.8] as Vec3,
+          rig: item.rig ? {
+            ...item.rig,
+            bones: item.rig.bones.map((bone) => ({ ...bone })),
+            ikChains: item.rig.ikChains.map((chain) => ({ ...chain })),
+          } : undefined,
+        }));
+      const cameraClones = state.cameras
+        .filter((item) => item.groupId === groupId)
+        .map((item) => ({
+          ...item,
+          id: `camera_${crypto.randomUUID()}`,
+          name: `${item.name} 副本`,
+          groupId: newGroupId,
+          position: [item.position[0] + 0.8, item.position[1], item.position[2] + 0.8] as Vec3,
+        }));
+      const group: SceneGroup = {
+        id: newGroupId,
+        name: `${sourceGroup.name} 副本`,
+        createdAt: Date.now(),
+      };
+      return {
+        groups: [...state.groups, group],
+        objects: [...state.objects, ...objectClones],
+        cameras: [...state.cameras, ...cameraClones],
+        activeGroupId: newGroupId,
+        activeObjectId: undefined,
+        selectedCameraId: undefined,
+        selectedAssetIds: [
+          ...objectClones.map((item) => `object:${item.id}`),
+          ...cameraClones.map((item) => `camera:${item.id}`),
+        ],
+      };
+    }),
+  setAnimationTrajectoryControlPoint: (bindingId, startKeyframeId, endKeyframeId, controlPoint) =>
+    set((state) => ({
+      animation: {
+        ...state.animation,
+        bindings: state.animation.bindings.map((binding) => {
+          if (binding.id !== bindingId) return binding;
+          const segments = binding.trajectorySegments ?? [];
+          const existingIndex = segments.findIndex(
+            (segment) =>
+              segment.startKeyframeId === startKeyframeId &&
+              segment.endKeyframeId === endKeyframeId,
+          );
+          const nextSegment = { startKeyframeId, endKeyframeId, controlPoint };
+          return {
+            ...binding,
+            trajectorySegments:
+              existingIndex >= 0
+                ? segments.map((segment, index) => index === existingIndex ? nextSegment : segment)
+                : [...segments, nextSegment],
+          };
+        }),
+      },
+    })),
+  clearTimelineSelection: () => set({ selectedTimelineKeyframe: undefined }),
+  setSelectedTimelineKeyframe: (selection) => set({ selectedTimelineKeyframe: selection }),
   setActiveObject: (objectId) =>
     set((state) => ({
       activeObjectId: objectId,
       selectedCameraId: undefined,
+      selectedTimelineKeyframe: undefined,
+      activeGroupId: undefined,
+      selectedAssetIds: objectId ? [`object:${objectId}`] : [],
       objects: state.objects.map((object) =>
         object.id === objectId && object.rig
           ? {
@@ -413,6 +798,9 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       activeCameraId: cameraId,
       selectedCameraId: cameraId,
       activeObjectId: undefined,
+      selectedTimelineKeyframe: undefined,
+      activeGroupId: undefined,
+      selectedAssetIds: [`camera:${cameraId}`],
     }),
   setCameraPreviewActive: (active) => set({ cameraPreviewActive: active }),
   addCamera: (camera = {}) =>
@@ -439,6 +827,13 @@ export const useProjectStore = create<ProjectStore>((set) => ({
         activeCameraId: id,
         selectedCameraId: id,
         activeObjectId: undefined,
+      };
+    }),
+  reorderCamera: (cameraId, direction) =>
+    set((state) => {
+      const cameras = moveItemById(state.cameras, cameraId, direction);
+      return {
+        cameras,
       };
     }),
   updateCamera: (cameraId, updates) =>
@@ -524,24 +919,11 @@ export const useProjectStore = create<ProjectStore>((set) => ({
     })),
   removeCamera: (cameraId) =>
     set((state) => {
-      const remaining = state.cameras.filter((camera) => camera.id !== cameraId);
-      const fallbackCamera: SceneCamera = {
-        id: `camera_${crypto.randomUUID()}`,
-        name: "相机1",
-        position: [8, 5.2, 7.4],
-        rotation: [-0.7, 0.8, 0.5],
-        target: [0, 0, 0],
-        targetMode: "manual",
-        fov: 45,
-        mode: "lookAt",
-        visible: true,
-        locked: false,
-      };
-      const nextCameras = remaining.length > 0 ? remaining : [fallbackCamera];
+      const nextCameras = state.cameras.filter((camera) => camera.id !== cameraId);
       const nextActiveCameraId =
         state.activeCameraId === cameraId
-          ? nextCameras[0].id
-          : state.activeCameraId ?? nextCameras[0].id;
+          ? nextCameras[0]?.id
+          : state.activeCameraId ?? nextCameras[0]?.id;
 
       window.dispatchEvent(
         new CustomEvent("scene-camera-remove-request", {
@@ -557,6 +939,7 @@ export const useProjectStore = create<ProjectStore>((set) => ({
         activeObjectId: undefined,
         cameraPreviewActive:
           state.activeCameraId === cameraId ? false : state.cameraPreviewActive,
+        animation: removeTimelineTarget(state.animation, "camera", cameraId),
       };
     }),
   setObjectRigMode: (objectId, mode) =>
@@ -769,6 +1152,10 @@ export const useProjectStore = create<ProjectStore>((set) => ({
         object.id === objectId ? { ...object, ...updates } : object,
       ),
     })),
+  reorderObject: (objectId, direction) =>
+    set((state) => ({
+      objects: moveItemById(state.objects, objectId, direction),
+    })),
   updateObjectTransform: (objectId, transform) =>
     set((state) => {
       const objects = state.objects.map((object) => {
@@ -863,6 +1250,7 @@ export const useProjectStore = create<ProjectStore>((set) => ({
         objects: state.objects.filter((object) => object.id !== objectId),
         activeObjectId:
           state.activeObjectId === objectId ? undefined : state.activeObjectId,
+        animation: removeTimelineTarget(state.animation, "object", objectId),
       };
     }),
   updateObjectMaterial: (objectId, materialId, updates) =>
@@ -933,6 +1321,10 @@ export const useProjectStore = create<ProjectStore>((set) => ({
     set((state) => ({
       snapshots: [snapshot, ...state.snapshots],
     })),
+  removeSnapshot: (snapshotId) =>
+    set((state) => ({
+      snapshots: state.snapshots.filter((snapshot) => snapshot.id !== snapshotId),
+    })),
   setAnimationTime: (time) =>
     set((state) => applyAnimationState(state, time)),
   setAnimationPlaying: (playing) =>
@@ -940,8 +1332,8 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       animation: {
         ...state.animation,
         currentTime:
-          playing && state.animation.currentTime >= state.animation.duration - 0.0001
-            ? 0
+          playing && (state.animation.currentTime >= (state.animation.outPointTime ?? state.animation.duration) - 0.0001 || state.animation.currentTime < (state.animation.inPointTime ?? 0))
+            ? state.animation.inPointTime ?? 0
             : state.animation.currentTime,
         isPlaying: playing,
       },
@@ -949,17 +1341,26 @@ export const useProjectStore = create<ProjectStore>((set) => ({
   toggleAnimationPlayback: () =>
     set((state) => {
       const nextPlaying = !state.animation.isPlaying;
+      const startTime = state.animation.inPointTime ?? 0;
+      const endTime = state.animation.outPointTime ?? state.animation.duration;
       return {
         animation: {
           ...state.animation,
           currentTime:
-            nextPlaying && state.animation.currentTime >= state.animation.duration - 0.0001
-              ? 0
+            nextPlaying && (state.animation.currentTime >= endTime - 0.0001 || state.animation.currentTime < startTime)
+              ? startTime
               : state.animation.currentTime,
           isPlaying: nextPlaying,
         },
       };
     }),
+  toggleAnimationLoop: () =>
+    set((state) => ({
+      animation: {
+        ...state.animation,
+        loop: !state.animation.loop,
+      },
+    })),
   setAnimationAutoKeyEnabled: (enabled) =>
     set((state) => ({
       animation: {
@@ -983,7 +1384,14 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       });
       const nextState = {
         ...state,
-        animation: nextAnimation,
+        animation: {
+          ...nextAnimation,
+          cameraCuts: normalizeExistingCameraCuts(
+            nextAnimation.cameraCuts,
+            nextDuration,
+            nextAnimation.fps,
+          ),
+        },
       };
       return applyAnimationState(nextState, state.animation.currentTime);
     }),
@@ -996,7 +1404,14 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       });
       const nextState = {
         ...state,
-        animation: nextAnimation,
+        animation: {
+          ...nextAnimation,
+          cameraCuts: normalizeExistingCameraCuts(
+            nextAnimation.cameraCuts,
+            nextAnimation.duration,
+            nextFps,
+          ),
+        },
       };
       return applyAnimationState(nextState, state.animation.currentTime);
     }),
@@ -1067,15 +1482,17 @@ export const useProjectStore = create<ProjectStore>((set) => ({
         return state;
       }
       const duration = clampAnimationDuration(state.animation.duration);
+      const startTime = state.animation.inPointTime ?? 0;
+      const endTime = state.animation.outPointTime ?? duration;
       const rawNextTime = state.animation.currentTime + Math.max(0, deltaSeconds);
       const shouldLoop = state.animation.loop;
       const nextTime =
-        rawNextTime > duration
+        rawNextTime > endTime
           ? shouldLoop
-            ? rawNextTime % duration
-            : duration
+            ? startTime + ((rawNextTime - startTime) % Math.max(endTime - startTime, 0.001))
+            : endTime
           : rawNextTime;
-      if (!shouldLoop && rawNextTime >= duration) {
+      if (!shouldLoop && rawNextTime >= endTime) {
         return {
           animation: {
             ...state.animation,
@@ -1104,6 +1521,31 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       },
     }));
     return { ok: true as const };
+  },
+  captureSelectedAssetsKeyframes: () => {
+    const state = get();
+    const currentTime = clampAnimationTime(state.animation.currentTime, state.animation.duration, state.animation.fps);
+    const selected = state.selectedAssetIds;
+    if (!selected.length) return { ok: false as const, message: "请先选择对象、机位或组合" };
+    let bindings = state.animation.bindings;
+    selected.forEach((key) => {
+      const [type, id] = key.split(":");
+      if (type === "object") {
+        const object = state.objects.find((item) => item.id === id);
+        if (object) bindings = recordObjectTransformChannels(bindings, object, currentTime);
+      }
+      if (type === "camera") {
+        const camera = state.cameras.find((item) => item.id === id);
+        if (camera) bindings = recordCameraChannels(bindings, camera, currentTime);
+      }
+    });
+    set((current) => ({
+      animation: {
+        ...current.animation,
+        bindings,
+      },
+    }));
+    return { ok: true as const, count: selected.length, bindings };
   },
   addCurrentCameraCut: () => {
     const state = useProjectStore.getState();

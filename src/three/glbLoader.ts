@@ -1,8 +1,10 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import type { BoneRecord, IkChainRecord, ObjectRig } from "../domain/projectTypes";
 
 const loader = new GLTFLoader();
+const objLoader = new OBJLoader();
 
 export function loadGlbFromFile(file: File) {
   const objectUrl = URL.createObjectURL(file);
@@ -23,6 +25,20 @@ export function loadGlbFromFile(file: File) {
       },
     );
   });
+}
+
+export function loadSceneFromFile(file: File) {
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  if (extension === "obj") {
+    const objectUrl = URL.createObjectURL(file);
+    return new Promise<{ objectUrl: string; scene: THREE.Group }>((resolve, reject) => {
+      objLoader.load(objectUrl, (scene) => resolve({ objectUrl, scene }), undefined, (error) => {
+        URL.revokeObjectURL(objectUrl);
+        reject(error);
+      });
+    });
+  }
+  return loadGlbFromFile(file);
 }
 
 export function normalizeImportedScene(scene: THREE.Object3D) {

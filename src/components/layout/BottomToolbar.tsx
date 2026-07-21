@@ -1,13 +1,14 @@
 import {
   Camera,
+  CircleHelp,
   ChevronDown,
-  Focus,
   ImagePlus,
   Move3D,
+  MousePointer2,
+  PersonStanding,
   Rotate3D,
   ScanSearch,
   Scale3D,
-  Shapes,
   Square,
   Upload,
   UserRound,
@@ -30,7 +31,7 @@ const moveOptions: Array<{
 }> = [
   { id: "translate", label: "移动", shortcut: "V", icon: Move3D },
   { id: "rotate", label: "旋转", shortcut: "R", icon: Rotate3D },
-  { id: "scale", label: "缩放", shortcut: "S", icon: Scale3D },
+  { id: "scale", label: "缩放", shortcut: "X", icon: Scale3D },
 ];
 
 function isEditableTarget(target: EventTarget | null) {
@@ -43,9 +44,13 @@ function isEditableTarget(target: EventTarget | null) {
 export function BottomToolbar({
   lifted = false,
   liftedHeight = 420,
+  timelineExpanded,
+  onTimelineToggle,
 }: {
   lifted?: boolean;
   liftedHeight?: number;
+  timelineExpanded: boolean;
+  onTimelineToggle: () => void;
 }) {
   const toolbarRef = useRef<HTMLElement>(null);
   const glbInputRef = useRef<HTMLInputElement>(null);
@@ -56,7 +61,7 @@ export function BottomToolbar({
   const [crowdSpacing, setCrowdSpacing] = useState(1.8);
 
   const activeTool = useProjectStore((state) => state.activeTool);
-  const selectedCameraId = useProjectStore((state) => state.selectedCameraId);
+  const activeCameraId = useProjectStore((state) => state.activeCameraId);
   const outputFrame = useProjectStore((state) => state.outputFrame);
   const transformMode = useProjectStore((state) => state.transformMode);
   const setActiveTool = useProjectStore((state) => state.setActiveTool);
@@ -67,8 +72,6 @@ export function BottomToolbar({
     () => moveOptions.find((item) => item.id === transformMode) ?? moveOptions[0],
     [transformMode],
   );
-  const CurrentMoveIcon = currentMoveLabel.icon;
-
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
       if (!toolbarRef.current?.contains(event.target as Node)) {
@@ -86,7 +89,7 @@ export function BottomToolbar({
       }
       const key = event.key.toLowerCase();
       const nextMode =
-        key === "v" ? "translate" : key === "r" ? "rotate" : key === "s" ? "scale" : undefined;
+        key === "v" ? "translate" : key === "r" ? "rotate" : key === "x" ? "scale" : undefined;
       if (!nextMode) {
         return;
       }
@@ -162,7 +165,7 @@ export function BottomToolbar({
   };
 
   const handleSnapshot = () => {
-    if (!selectedCameraId) {
+    if (!activeCameraId) {
       return;
     }
     setActiveTool("snapshot");
@@ -175,6 +178,30 @@ export function BottomToolbar({
     window.dispatchEvent(new Event("camera-create-from-view-request"));
   };
 
+  const KeyframeWorkbenchIcon = ({ size = 18 }: { size?: number }) => (
+    <svg
+      aria-hidden="true"
+      className="toolbar-keyframe-icon"
+      fill="none"
+      height={size}
+      viewBox="0 0 20 20"
+      width={size}
+    >
+      <path
+        d="M10 1.75 18.25 10 10 18.25 1.75 10 10 1.75Z"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="2.2"
+      />
+      <path
+        d="M10 6.2v7.6M6.2 10h7.6"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="2.6"
+      />
+    </svg>
+  );
+
   return (
     <nav
       className={`bottom-toolbar ${lifted ? "is-lifted" : "is-docked"}`}
@@ -186,7 +213,7 @@ export function BottomToolbar({
         ref={glbInputRef}
         className="file-input"
         type="file"
-        accept=".glb,model/gltf-binary"
+        accept=".glb,.obj,.3dgs,model/gltf-binary,text/plain"
         onChange={handleGlbFileChange}
       />
       <input
@@ -206,7 +233,7 @@ export function BottomToolbar({
             setOpenMenu(openMenu === "move" ? undefined : "move");
           }}
         >
-          <CurrentMoveIcon size={16} />
+          <MousePointer2 size={16} />
           <span>{currentMoveLabel.label}</span>
           <ChevronDown size={14} />
         </button>
@@ -246,7 +273,7 @@ export function BottomToolbar({
             setOpenMenu(openMenu === "object" ? undefined : "object");
           }}
         >
-          <Shapes size={16} />
+          <PersonStanding size={16} />
           <span>对象</span>
           <ChevronDown size={14} />
         </button>
@@ -256,6 +283,7 @@ export function BottomToolbar({
               <span className="toolbar-menu-main">
                 <Upload size={14} />
                 <span>本地上传</span>
+                <span title="支持 GLB、OBJ；3DGS 请先转换为 GLB"><CircleHelp size={13} /></span>
               </span>
             </button>
             <button
@@ -452,14 +480,42 @@ export function BottomToolbar({
 
       <button
         className={`toolbar-pill ${activeTool === "snapshot" ? "is-active" : ""}`}
-        disabled={!selectedCameraId}
-        title={selectedCameraId ? "按当前选中机位截图" : "请先选中机位"}
+        disabled={!activeCameraId}
+        title={activeCameraId ? "拍摄快照" : "请先创建机位"}
         type="button"
         onClick={handleSnapshot}
       >
-        <Focus size={16} />
+        <Camera size={16} />
         <span>截图</span>
       </button>
+
+      <div className="toolbar-animation-control">
+        <button
+          className={`toolbar-mode-button ${!timelineExpanded ? "is-active" : ""}`}
+          title="设计模式"
+          type="button"
+          onClick={() => {
+            if (timelineExpanded) {
+              onTimelineToggle();
+            }
+          }}
+        >
+          <span>设计</span>
+        </button>
+        <button
+          className={`toolbar-mode-button ${timelineExpanded ? "is-active" : ""}`}
+          title="动画模式"
+          type="button"
+          onClick={() => {
+            if (!timelineExpanded) {
+              onTimelineToggle();
+            }
+          }}
+        >
+          <KeyframeWorkbenchIcon size={15} />
+          <span>动画</span>
+        </button>
+      </div>
     </nav>
   );
 }

@@ -1,21 +1,22 @@
 import {
   Camera,
-  ChevronDown,
-  ChevronRight,
-  ChevronUp,
-  Circle,
+  Clock3,
   Download,
+  GripVertical,
   KeyRound,
   Pause,
   Play,
   Plus,
+  Repeat2,
   SkipBack,
   SkipForward,
+  TimerReset,
   Trash2,
-  Video,
+  X,
 } from "lucide-react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { TimelineKeyframeRef } from "../../domain/projectTypes";
 import { formatBoneDisplayName } from "../../domain/rigUtils";
 import {
@@ -29,10 +30,12 @@ type TimelineTreeNode = {
   id: string;
   label: string;
   subtitle?: string;
-  kind: "summary" | "group" | "binding" | "channel" | "cameraCut";
+  kind: "cameraSequence" | "section" | "camera" | "object" | "empty";
+  targetId?: string;
   keyframes: TimelineDisplayKeyframe[];
-  children?: TimelineTreeNode[];
+  cameraClip?: TimelineCameraClip;
   laneClassName?: string;
+  muted?: boolean;
 };
 
 type TimelineDisplayKeyframe = {
@@ -77,28 +80,21 @@ function buildDisplayKeyframes(
   return Array.from(byTime.values()).sort((left, right) => left.time - right.time);
 }
 
-function formatFrameLabel(time: number, fps: number) {
-  return Math.round(Math.max(0, time) * fps).toString();
-}
-
-function formatTimecode(time: number, fps: number) {
-  const safeFps = Math.max(1, Math.round(fps));
-  const totalFrames = Math.max(0, Math.round(time * safeFps));
-  const framesPerHour = safeFps * 3600;
-  const framesPerMinute = safeFps * 60;
-  const hours = Math.floor(totalFrames / framesPerHour);
-  const minutes = Math.floor((totalFrames % framesPerHour) / framesPerMinute);
-  const seconds = Math.floor((totalFrames % framesPerMinute) / safeFps);
-  const frames = totalFrames % safeFps;
-  return `${hours.toString().padStart(2, "0")}:${minutes
-    .toString()
-    .padStart(2, "0")}:${seconds.toString().padStart(2, "0")}.${frames
-    .toString()
-    .padStart(2, "0")}`;
-}
-
 function formatSeconds(seconds: number) {
   return Number(seconds.toFixed(2)).toString();
+}
+
+function formatSecondLabel(seconds: number) {
+  return `${formatSeconds(Math.max(0, seconds))}s`;
+}
+
+function TimelineMarkIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg aria-hidden="true" className="timeline-mark-icon" viewBox="0 0 20 20" width={size} height={size}>
+      <path d="M3 4.5h14M3 10h14M3 15.5h14" stroke="currentColor" strokeLinecap="round" strokeWidth="1.7" />
+      <path d="M7 2.6v14.8M13 2.6v14.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.2" opacity="0.55" />
+    </svg>
+  );
 }
 
 function isEditableTarget(target: EventTarget | null) {
@@ -154,12 +150,10 @@ export function TimelinePanel({
   expanded,
   height,
   onHeightChange,
-  onToggle,
 }: {
   expanded: boolean;
   height: number;
   onHeightChange: (height: number) => void;
-  onToggle: () => void;
 }) {
   const projectName = useProjectStore((state) => state.projectName);
   const animation = useProjectStore((state) => state.animation);
@@ -167,8 +161,9 @@ export function TimelinePanel({
   const selectedCameraId = useProjectStore((state) => state.selectedCameraId);
   const objects = useProjectStore((state) => state.objects);
   const cameras = useProjectStore((state) => state.cameras);
+  const selectedAssetIds = useProjectStore((state) => state.selectedAssetIds);
   const setAnimationTime = useProjectStore((state) => state.setAnimationTime);
-  const setAnimationFps = useProjectStore((state) => state.setAnimationFps);
+  const setAnimationDuration = useProjectStore((state) => state.setAnimationDuration);
   const setAnimationInPoint = useProjectStore((state) => state.setAnimationInPoint);
   const setAnimationOutPoint = useProjectStore((state) => state.setAnimationOutPoint);
   const clearAnimationInPoint = useProjectStore((state) => state.clearAnimationInPoint);
@@ -179,17 +174,19 @@ export function TimelinePanel({
   const setAnimationOutPointToCurrentTime = useProjectStore(
     (state) => state.setAnimationOutPointToCurrentTime,
   );
-  const addCameraCutAtTime = useProjectStore((state) => state.addCameraCutAtTime);
   const toggleAnimationPlayback = useProjectStore(
     (state) => state.toggleAnimationPlayback,
   );
+  const toggleAnimationLoop = useProjectStore((state) => state.toggleAnimationLoop);
   const setAnimationAutoKeyEnabled = useProjectStore(
     (state) => state.setAnimationAutoKeyEnabled,
   );
   const captureCurrentKeyframe = useProjectStore(
     (state) => state.captureCurrentKeyframe,
   );
-  const addCurrentCameraCut = useProjectStore((state) => state.addCurrentCameraCut);
+  const captureSelectedAssetsKeyframes = useProjectStore(
+    (state) => state.captureSelectedAssetsKeyframes,
+  );
   const removeSelectedTimelineKeyframe = useProjectStore(
     (state) => state.removeSelectedTimelineKeyframe,
   );
@@ -197,8 +194,17 @@ export function TimelinePanel({
     (state) => state.moveSelectedTimelineKeyframe,
   );
   const resizeCameraCutClip = useProjectStore((state) => state.resizeCameraCutClip);
+  const addCameraCutAtTime = useProjectStore((state) => state.addCameraCutAtTime);
+  const setActiveCamera = useProjectStore((state) => state.setActiveCamera);
+  const setCameraPreviewActive = useProjectStore((state) => state.setCameraPreviewActive);
+  const clearSelection = useProjectStore((state) => state.clearSelection);
+  const clearTimelineSelection = useProjectStore((state) => state.clearTimelineSelection);
+  const setSelectedTimelineKeyframe = useProjectStore(
+    (state) => state.setSelectedTimelineKeyframe,
+  );
   const [feedback, setFeedback] = useState<string>("");
-  const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>({});
+  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  const [selectedTrajectoryId, setSelectedTrajectoryId] = useState<string | null>(null);
   const [selectedKeyframe, setSelectedKeyframe] = useState<{
     id: string;
     refs: TimelineKeyframeRef[];
@@ -224,14 +230,28 @@ export function TimelinePanel({
     laneWidth: number;
   } | null>(null);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [recordingDialogOpen, setRecordingDialogOpen] = useState(false);
+  const [recordingProgress, setRecordingProgress] = useState<{
+    current: number;
+    total: number;
+  } | null>(null);
   const [exportStart, setExportStart] = useState("0");
   const [exportEnd, setExportEnd] = useState("");
   const [exportRangeCustomized, setExportRangeCustomized] = useState(false);
   const [exportError, setExportError] = useState("");
-  const [cameraMenuOpen, setCameraMenuOpen] = useState(false);
+  const [durationDraft, setDurationDraft] = useState("30");
+  const [timelineZoom, setTimelineZoom] = useState(1);
+  const [cameraSequenceMenuOpen, setCameraSequenceMenuOpen] = useState(false);
+  const [cameraSequenceMenuPosition, setCameraSequenceMenuPosition] = useState<{
+    left: number;
+    top: number;
+  } | null>(null);
+  const [draggingDuration, setDraggingDuration] = useState<{
+    startX: number;
+    startDuration: number;
+  } | null>(null);
   const [lastEditedKeyframeIds, setLastEditedKeyframeIds] = useState<string[]>([]);
   const previousBindingsRef = useRef(animation.bindings);
-  const cameraMenuRef = useRef<HTMLDivElement>(null);
   const timelineScrollRef = useRef<HTMLDivElement>(null);
   const timelineLeftListRef = useRef<HTMLDivElement>(null);
   const timelineRightListRef = useRef<HTMLDivElement>(null);
@@ -245,6 +265,7 @@ export function TimelinePanel({
     laneWidth: number;
     isPanning: boolean;
   } | null>(null);
+  const timelineZoomRef = useRef(1);
 
   const activeObject = activeObjectId
     ? objects.find((object) => object.id === activeObjectId)
@@ -260,19 +281,20 @@ export function TimelinePanel({
     () => new Map(cameras.map((camera) => [camera.id, camera])),
     [cameras],
   );
-
-  const cameraCutClips = useMemo<TimelineCameraClip[]>(
+  const cameraSequenceClips = useMemo<TimelineCameraClip[]>(
     () =>
       animation.cameraCuts
+        .slice()
+        .sort((left, right) => left.startTime - right.startTime)
         .map((cut) => {
+          const camera = cameraMap.get(cut.cameraId);
           const startTime = cut.startTime ?? cut.time ?? 0;
-          const endTime = cut.endTime ?? animation.duration;
           return {
             id: `camera-cut:${cut.id}`,
             cameraId: cut.cameraId,
-            label: cameraMap.get(cut.cameraId)?.name ?? "未知机位",
+            label: camera?.name ?? "未知机位",
             startTime,
-            endTime,
+            endTime: startTime,
             refs: [
               {
                 kind: "cameraCut" as const,
@@ -280,8 +302,7 @@ export function TimelinePanel({
               },
             ],
           };
-        })
-        .sort((left, right) => left.startTime - right.startTime),
+        }),
     [animation.cameraCuts, animation.duration, cameraMap],
   );
 
@@ -354,91 +375,64 @@ export function TimelinePanel({
     const objectBindings = bindingRows.filter((binding) => binding.targetType === "object");
     const cameraBindings = bindingRows.filter((binding) => binding.targetType === "camera");
 
-    const objectChildren: TimelineTreeNode[] = objectBindings.map((binding) => ({
-      id: binding.id,
-      label: binding.label,
-      subtitle: `${binding.channelRows.length} 个通道`,
-      kind: "binding",
-      keyframes: binding.keyframes,
-      children: binding.channelRows.map((row) => ({
-        id: `${row.bindingId}:${row.channel.id}`,
-        label: row.label,
-        subtitle: row.subtitle,
-        kind: "channel",
-        keyframes: row.keyframes,
-      })),
-    }));
+    const cameraRows: TimelineTreeNode[] = cameraBindings.map((binding) => {
+      const camera = cameraMap.get(binding.targetId);
+      return {
+        id: `camera-row:${binding.targetId}`,
+        label: binding.label,
+        kind: "camera",
+        targetId: binding.targetId,
+        keyframes: binding.keyframes,
+        muted: camera ? !camera.visible : true,
+      };
+    });
 
-    const cameraChildren: TimelineTreeNode[] = cameraBindings.map((binding) => ({
-      id: binding.id,
-      label: binding.label,
-      subtitle: `${binding.channelRows.length} 个通道`,
-      kind: "binding",
-      keyframes: binding.keyframes,
-      children: binding.channelRows.map((row) => ({
-        id: `${row.bindingId}:${row.channel.id}`,
-        label: row.label,
-        subtitle: row.subtitle,
-        kind: "channel",
-        keyframes: row.keyframes,
-      })),
-    }));
+    const objectRows: TimelineTreeNode[] = objectBindings.map((binding) => {
+      const object = objectMap.get(binding.targetId);
+      return {
+        id: `object-row:${binding.targetId}`,
+        label: binding.label,
+        kind: "object",
+        targetId: binding.targetId,
+        keyframes: binding.keyframes,
+        muted: object ? !object.visible : true,
+      };
+    });
 
-    return [
+    const nodes: TimelineTreeNode[] = [
       {
-        id: "summary",
-        label: "汇总",
-        subtitle: "默认展示全局关键帧",
-        kind: "summary",
-        keyframes: buildDisplayKeyframes(bindingRows.flatMap((binding) => binding.keyframes)),
-        laneClassName: "timeline-track-lane timeline-summary-lane",
-        children: [
-          {
-            id: "group:object",
-            label: "对象",
-            subtitle: objectChildren.length ? `${objectChildren.length} 个对象轨道` : "暂无对象轨道",
-            kind: "group",
-            keyframes: buildDisplayKeyframes(objectChildren.flatMap((item) => item.keyframes)),
-            children: objectChildren,
-          },
-          {
-            id: "group:camera",
-            label: "机位",
-            subtitle: cameraChildren.length ? `${cameraChildren.length} 个机位轨道` : "暂无机位轨道",
-            kind: "group",
-            keyframes: buildDisplayKeyframes(cameraChildren.flatMap((item) => item.keyframes)),
-            children: cameraChildren,
-          },
-        ],
+        id: "camera-sequence",
+        label: "机位序列",
+        kind: "cameraSequence",
+        keyframes: [],
       },
     ];
-  }, [bindingRows]);
-
-  const selectionLabel = useMemo(() => {
-    if (activeObject?.rig?.hasSkeleton && activeObject.rig.boneControlActive) {
-      if (activeObject.rig.mode === "fk" && activeObject.rig.activeBoneId) {
-        const bone = activeObject.rig.bones.find(
-          (item) => item.id === activeObject.rig?.activeBoneId,
-        );
-        return bone
-          ? `当前骨骼：${formatBoneDisplayName(bone.name)}`
-          : `当前对象：${activeObject.name}`;
-      }
-      if (activeObject.rig.mode === "ik" && activeObject.rig.activeIkChainId) {
-        const chain = activeObject.rig.ikChains.find(
-          (item) => item.id === activeObject.rig?.activeIkChainId,
-        );
-        return chain ? `当前 IK：${chain.name}` : `当前对象：${activeObject.name}`;
-      }
+    if (cameraRows.length) {
+      nodes.push({
+        id: "section:camera",
+        label: "机位",
+        kind: "section",
+        keyframes: [],
+      });
+      nodes.push(...cameraRows);
     }
-    if (activeObject) {
-      return `当前对象：${activeObject.name}`;
+    if (objectRows.length) {
+      nodes.push({
+        id: "section:object",
+        label: "对象",
+        kind: "section",
+        keyframes: [],
+      });
+      nodes.push(...objectRows);
     }
-    if (activeCamera) {
-      return `当前机位：${activeCamera.name}`;
-    }
-    return "请选择对象、机位或骨骼控制节点";
-  }, [activeCamera, activeObject]);
+    return nodes;
+  }, [bindingRows, cameraMap, objectMap]);
+  const timelineHasTracks = timelineTree.some(
+    (node) => node.kind === "camera" || node.kind === "object",
+  );
+  const timelineHasContent = timelineHasTracks || cameraSequenceClips.length > 0;
+  const timelineToolsEnabled = timelineHasContent;
+  const canInsertSelectedAsset = Boolean(activeObject || activeCamera || selectedAssetIds.length);
 
   const ioRange = useMemo(() => {
     const startTime = animation.inPointTime ?? 0;
@@ -471,7 +465,13 @@ export function TimelinePanel({
   };
 
   const handleCapture = () => {
-    const result = captureCurrentKeyframe();
+    if (!canInsertSelectedAsset) {
+      setFeedback("请从资产列表选择资产，并点击插针添加到时间轴");
+      return;
+    }
+    const result = activeObject || activeCamera
+      ? captureCurrentKeyframe()
+      : captureSelectedAssetsKeyframes();
     if (result.ok) {
       if (activeObject) {
         setLastEditedKeyframeIds(
@@ -483,16 +483,19 @@ export function TimelinePanel({
         );
       }
     }
-    setFeedback(result.ok ? "已记录关键帧" : result.message);
-  };
-
-  const handleCameraCutCapture = (cameraId?: string) => {
-    const result = cameraId ? addCameraCutAtTime(cameraId) : addCurrentCameraCut();
-    setCameraMenuOpen(false);
-    setFeedback(result.ok ? "已添加机位序列" : result.message);
+    if (result.ok) {
+      if (activeObject || activeCamera) {
+        setSelectedTrackId(activeObject ? `object-row:${activeObject.id}` : `camera-row:${activeCamera?.id}`);
+      }
+    }
+    setFeedback(result.ok ? `已添加${"count" in result ? result.count : 1}个资产到时间轴并生成关键帧` : result.message);
   };
 
   const handleSetInPoint = () => {
+    if (!timelineToolsEnabled) {
+      setFeedback("请先将资产添加到时间轴");
+      return;
+    }
     const shouldClear =
       animation.inPointTime !== undefined &&
       Math.abs(animation.inPointTime - animation.currentTime) < 0.0001;
@@ -501,6 +504,10 @@ export function TimelinePanel({
   };
 
   const handleSetOutPoint = () => {
+    if (!timelineToolsEnabled) {
+      setFeedback("请先将资产添加到时间轴");
+      return;
+    }
     const shouldClear =
       animation.outPointTime !== undefined &&
       Math.abs(animation.outPointTime - animation.currentTime) < 0.0001;
@@ -528,11 +535,11 @@ export function TimelinePanel({
     const nextTime = (relativeX / Math.max(laneWidth, 1)) * animation.duration;
     if (type === "in") {
       setAnimationInPoint(nextTime);
-      setFeedback(`入点：第 ${formatFrameLabel(nextTime, animation.fps)} 帧`);
+      setFeedback(`入点：${formatSecondLabel(nextTime)}`);
       return;
     }
     setAnimationOutPoint(nextTime);
-    setFeedback(`出点：第 ${formatFrameLabel(nextTime, animation.fps)} 帧`);
+    setFeedback(`出点：${formatSecondLabel(nextTime)}`);
   }, [animation.duration, animation.fps, setAnimationInPoint, setAnimationOutPoint]);
 
   const handleRangePointPointerDown = (
@@ -554,19 +561,6 @@ export function TimelinePanel({
       laneWidth: laneRect.width,
     });
   };
-
-  useEffect(() => {
-    if (!cameraMenuOpen) {
-      return undefined;
-    }
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!cameraMenuRef.current?.contains(event.target as Node)) {
-        setCameraMenuOpen(false);
-      }
-    };
-    window.addEventListener("pointerdown", handlePointerDown);
-    return () => window.removeEventListener("pointerdown", handlePointerDown);
-  }, [cameraMenuOpen]);
 
   useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
@@ -593,24 +587,25 @@ export function TimelinePanel({
   }, [onHeightChange]);
 
   const handleDeleteSelectedKeyframe = () => {
+    if (!timelineToolsEnabled) {
+      setFeedback("请先将资产添加到时间轴");
+      return;
+    }
     if (!selectedKeyframe) {
+      setFeedback("请先选择要删除的关键帧或机位范围");
+      return;
+    }
+    const hasChannelKeyframe = selectedKeyframe.refs.some((ref) => ref.kind === "channel");
+    if (!hasChannelKeyframe) {
+      setSelectedKeyframe(null);
+      setFeedback("机位范围为默认播放范围，可拖动调整，不能直接删除");
       return;
     }
     removeSelectedTimelineKeyframe(selectedKeyframe.refs);
     setSelectedKeyframe(null);
+    setSelectedTimelineKeyframe(undefined);
     setFeedback("已删除关键帧");
   };
-
-  useEffect(() => {
-    setExpandedNodes((current) =>
-      current.summary === undefined
-        ? {
-            ...current,
-            summary: true,
-          }
-        : current,
-    );
-  }, [timelineTree]);
 
   useEffect(() => {
     if (!selectedKeyframe) {
@@ -767,6 +762,30 @@ export function TimelinePanel({
     };
   }, [draggingRangePoint, updateRangePointAtClientX]);
 
+  useEffect(() => {
+    if (!draggingDuration) {
+      return undefined;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const delta = Math.round((event.clientX - draggingDuration.startX) / 8);
+      const nextDuration = Math.min(90, Math.max(1, draggingDuration.startDuration + delta));
+      setDurationDraft(nextDuration.toString());
+      setAnimationDuration(nextDuration);
+    };
+
+    const handlePointerUp = () => {
+      setDraggingDuration(null);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [draggingDuration, setAnimationDuration]);
+
   const seekTimelineAtClientX = useCallback((
     clientX: number,
     laneLeft: number,
@@ -909,29 +928,131 @@ export function TimelinePanel({
     };
   };
 
-  const toggleNodeExpanded = (nodeId: string) => {
-    setExpandedNodes((current) => ({
-      ...current,
-      [nodeId]: !current[nodeId],
-    }));
-  };
+  useEffect(() => {
+    timelineZoomRef.current = timelineZoom;
+  }, [timelineZoom]);
+
+  const applyTimelineZoom = useCallback((nextZoom: number, clientX?: number) => {
+    const scrollPane = timelineScrollRef.current;
+    const previousZoom = timelineZoomRef.current;
+    const clampedZoom = Math.min(4, Math.max(0.35, nextZoom));
+    if (Math.abs(clampedZoom - previousZoom) < 0.001) {
+      return;
+    }
+
+    if (!scrollPane) {
+      setTimelineZoom(clampedZoom);
+      timelineZoomRef.current = clampedZoom;
+      return;
+    }
+
+    const rect = scrollPane.getBoundingClientRect();
+    const anchorX = clientX === undefined
+      ? scrollPane.clientWidth / 2
+      : Math.min(scrollPane.clientWidth, Math.max(0, clientX - rect.left));
+    const currentContentWidth = Math.max(1, scrollPane.scrollWidth);
+    const anchorRatio = (scrollPane.scrollLeft + anchorX) / currentContentWidth;
+
+    setTimelineZoom(clampedZoom);
+    timelineZoomRef.current = clampedZoom;
+
+    requestAnimationFrame(() => {
+      const nextContentWidth = Math.max(1, scrollPane.scrollWidth);
+      scrollPane.scrollLeft = Math.max(0, anchorRatio * nextContentWidth - anchorX);
+    });
+  }, []);
+
+  const handleTimelineWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    if (!event.metaKey && !event.ctrlKey) {
+      return;
+    }
+    event.preventDefault();
+    const delta = event.deltaY || event.deltaX;
+    const factor = Math.exp(-delta * 0.002);
+    applyTimelineZoom(timelineZoomRef.current * factor, event.clientX);
+  }, [applyTimelineZoom]);
+
+  useEffect(() => {
+    const scrollPane = timelineScrollRef.current;
+    if (!scrollPane) {
+      return undefined;
+    }
+
+    const handleGestureStart = (event: Event) => {
+      event.preventDefault();
+    };
+    const handleGestureChange = (event: Event) => {
+      event.preventDefault();
+      const gesture = event as Event & { scale?: number; clientX?: number };
+      const scale = Number.isFinite(gesture.scale) ? gesture.scale ?? 1 : 1;
+      applyTimelineZoom(timelineZoomRef.current * scale, gesture.clientX);
+    };
+
+    scrollPane.addEventListener("gesturestart", handleGestureStart, { passive: false });
+    scrollPane.addEventListener("gesturechange", handleGestureChange, { passive: false });
+    return () => {
+      scrollPane.removeEventListener("gesturestart", handleGestureStart);
+      scrollPane.removeEventListener("gesturechange", handleGestureChange);
+    };
+  }, [applyTimelineZoom, expanded, timelineHasTracks]);
+
+  useEffect(() => {
+    if (!selectedTrackId) {
+      return;
+    }
+    if (!timelineTree.some((node) => node.id === selectedTrackId)) {
+      setSelectedTrackId(null);
+    }
+  }, [selectedTrackId, timelineTree]);
+
+  useEffect(() => {
+    const handleAssetSelectionChange = () => {
+      setSelectedTrackId(null);
+      setSelectedKeyframe(null);
+      clearTimelineSelection();
+    };
+    window.addEventListener("asset-library-selection-change", handleAssetSelectionChange);
+    return () =>
+      window.removeEventListener("asset-library-selection-change", handleAssetSelectionChange);
+  }, [clearTimelineSelection]);
+
+  useEffect(() => {
+    if (!cameraSequenceMenuOpen) {
+      return undefined;
+    }
+    const closeCameraSequenceMenu = () => {
+      setCameraSequenceMenuOpen(false);
+      setCameraSequenceMenuPosition(null);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeCameraSequenceMenu();
+      }
+    };
+    window.addEventListener("pointerdown", closeCameraSequenceMenu);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", closeCameraSequenceMenu);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [cameraSequenceMenuOpen]);
 
   const rulerTicks = useMemo(() => {
-    const totalFrames = Math.max(1, Math.round(animation.duration * animation.fps));
-    const step = Math.max(1, Math.ceil(totalFrames / 12));
-    return Array.from({ length: Math.floor(totalFrames / step) + 1 }).map((_, index) => {
-      const frame = Math.min(totalFrames, index * step);
+    const totalSeconds = Math.max(1, Math.ceil(animation.duration));
+    const step = Math.max(1, Math.ceil(totalSeconds / 12));
+    return Array.from({ length: Math.floor(totalSeconds / step) + 1 }).map((_, index) => {
+      const second = Math.min(totalSeconds, index * step);
       return {
-        key: `frame-${frame}`,
-        label: frame.toString(),
-        left: `${(frame / totalFrames) * 100}%`,
+        key: `second-${second}`,
+        label: `${second}s`,
+        left: `${(second / totalSeconds) * 100}%`,
       };
     });
-  }, [animation.duration, animation.fps]);
+  }, [animation.duration]);
 
   const timelineContentWidth = useMemo(
-    () => Math.min(12000, Math.max(960, Math.round(animation.duration * animation.fps * 12))),
-    [animation.duration, animation.fps],
+    () => Math.min(36000, Math.max(480, Math.round(animation.duration * 280 * timelineZoom))),
+    [animation.duration, timelineZoom],
   );
 
   const timelineStopTimes = useMemo(() => {
@@ -942,27 +1063,21 @@ export function TimelinePanel({
         row.keyframes.forEach((keyframe) => times.add(Number(keyframe.time.toFixed(4))));
       });
     });
-    cameraCutClips.forEach((clip) => {
-      times.add(Number(clip.startTime.toFixed(4)));
-      times.add(Number(clip.endTime.toFixed(4)));
-    });
     return Array.from(times).sort((left, right) => left - right);
-  }, [bindingRows, cameraCutClips]);
+  }, [bindingRows]);
 
   const visibleTimelineNodes = useMemo<VisibleTimelineNode[]>(() => {
-    const rows: VisibleTimelineNode[] = [];
-    const appendNode = (node: TimelineTreeNode, depth = 0) => {
-      rows.push({ node, depth });
-      if (!node.children?.length || !expandedNodes[node.id]) {
-        return;
-      }
-      node.children.forEach((child) => appendNode(child, depth + 1));
-    };
-    timelineTree.forEach((node) => appendNode(node));
-    return rows;
-  }, [expandedNodes, timelineTree]);
+    return timelineTree.map((node) => ({
+      node,
+      depth: node.kind === "section" || node.kind === "cameraSequence" ? 0 : 1,
+    }));
+  }, [timelineTree]);
 
   const moveToAdjacentKeyframe = (direction: -1 | 1) => {
+    if (!timelineToolsEnabled) {
+      setFeedback("请先将资产添加到时间轴");
+      return;
+    }
     const epsilon = 0.0001;
     const candidates =
       direction < 0
@@ -974,102 +1089,66 @@ export function TimelinePanel({
     }
   };
 
-  const getExportUnitMax = useCallback(
-    () => Math.round(animation.duration * animation.fps),
-    [animation.duration, animation.fps],
-  );
-
-  const getDefaultExportFrames = useCallback(() => {
-    const maxFrame = getExportUnitMax();
+  const getDefaultExportSeconds = useCallback(() => {
     if (ioRange.hasInPoint || ioRange.hasOutPoint) {
-      return normalizeExportFrameRange(
-        Math.round((animation.inPointTime ?? 0) * animation.fps),
-        Math.round((animation.outPointTime ?? animation.duration) * animation.fps),
-        maxFrame,
-      );
+      return {
+        start: animation.inPointTime ?? 0,
+        end: animation.outPointTime ?? animation.duration,
+      };
     }
-    return normalizeExportFrameRange(
-      0,
-      Math.round(Math.min(animation.duration, 15) * animation.fps),
-      maxFrame,
-    );
+    return {
+      start: 0,
+      end: animation.duration,
+    };
   }, [
     animation.duration,
-    animation.fps,
     animation.inPointTime,
     animation.outPointTime,
-    getExportUnitMax,
     ioRange.hasInPoint,
     ioRange.hasOutPoint,
   ]);
 
-  const getCurrentExportFrames = useCallback(() => {
-    const fallback = getDefaultExportFrames();
+  const getCurrentExportSeconds = useCallback(() => {
+    const fallback = getDefaultExportSeconds();
     const startValue = Number(exportStart);
     const endValue = Number(exportEnd);
     if (!Number.isFinite(startValue) || !Number.isFinite(endValue)) {
       return fallback;
     }
-    return normalizeExportFrameRange(startValue, endValue, getExportUnitMax());
-  }, [exportEnd, exportStart, getDefaultExportFrames, getExportUnitMax]);
+    return {
+      start: Math.min(animation.duration, Math.max(0, startValue)),
+      end: Math.min(animation.duration, Math.max(0, endValue)),
+    };
+  }, [animation.duration, exportEnd, exportStart, getDefaultExportSeconds]);
 
-  const applyExportFrameRange = useCallback((startFrame: number, endFrame: number) => {
-    setExportStart(startFrame.toString());
-    setExportEnd(endFrame.toString());
+  const applyExportSecondRange = useCallback((startSeconds: number, endSeconds: number) => {
+    setExportStart(formatSeconds(startSeconds));
+    setExportEnd(formatSeconds(endSeconds));
     setExportError("");
   }, []);
 
-  const openExportDialog = () => {
-    const nextRange = exportRangeCustomized
-      ? getCurrentExportFrames()
-      : getDefaultExportFrames();
-    applyExportFrameRange(nextRange.startFrame, nextRange.endFrame);
-    setExportDialogOpen(true);
-  };
-
-  useEffect(() => {
-    if (!exportDialogOpen || exportRangeCustomized) {
-      return;
-    }
-    const nextRange = getDefaultExportFrames();
-    applyExportFrameRange(nextRange.startFrame, nextRange.endFrame);
-  }, [
-    animation.duration,
-    animation.fps,
-    animation.inPointTime,
-    animation.outPointTime,
-    applyExportFrameRange,
-    exportDialogOpen,
-    exportRangeCustomized,
-    getDefaultExportFrames,
-  ]);
-
-  const buildExportRange = (): AnimationExportRange | undefined => {
-    const startValue = Number(exportStart);
-    const endValue = Number(exportEnd);
-    if (!Number.isFinite(startValue) || !Number.isFinite(endValue)) {
-      setExportError("请输入有效的起始和结束点位");
-      return undefined;
-    }
-    if (startValue < 0 || endValue < 0) {
-      setExportError("起始和结束点位不能小于 0");
-      return undefined;
-    }
-
+  const buildExportRangeFromSeconds = (
+    startSeconds: number,
+    endSeconds: number,
+  ): AnimationExportRange | undefined => {
     const fps = animation.fps;
     const maxFrame = Math.round(animation.duration * fps);
     const { startFrame: clampedStartFrame, endFrame: clampedEndFrame } =
-      normalizeExportFrameRange(startValue, endValue, maxFrame);
+      normalizeExportFrameRange(
+        Math.round(startSeconds * fps),
+        Math.round(endSeconds * fps),
+        maxFrame,
+      );
 
     if (clampedEndFrame <= clampedStartFrame) {
-      setExportError("结束点位必须晚于起始点位");
+      setExportError("结束时间必须晚于起始时间");
       return undefined;
     }
 
     return {
-      unit: "frames",
-      start: clampedStartFrame,
-      end: clampedEndFrame,
+      unit: "seconds",
+      start: clampedStartFrame / fps,
+      end: clampedEndFrame / fps,
       startTime: clampedStartFrame / fps,
       endTime: clampedEndFrame / fps,
       startFrame: clampedStartFrame,
@@ -1078,69 +1157,153 @@ export function TimelinePanel({
     };
   };
 
-  const handleExportAnimation = () => {
-    const range = buildExportRange();
+  const openExportDialog = () => {
+    if (!timelineToolsEnabled) {
+      setFeedback("请先将资产添加到时间轴");
+      return;
+    }
+    const rangeSeconds = getDefaultExportSeconds();
+    const range = buildExportRangeFromSeconds(rangeSeconds.start, rangeSeconds.end);
     if (!range) {
       return;
     }
-    const detail: AnimationExportRequestDetail = {
-      name: createAnimationExportName(projectName),
-      range,
+    setRecordingProgress({ current: 0, total: range.frameCount });
+    setRecordingDialogOpen(true);
+    setFeedback("视频保存中");
+    window.dispatchEvent(
+      new CustomEvent("animation-export-request", {
+        detail: {
+          name: createAnimationExportName(projectName),
+          range,
+        } satisfies AnimationExportRequestDetail,
+      }),
+    );
+  };
+
+  const applyDurationLimit = (value: number) => {
+    const nextDuration = Math.min(90, Math.max(1, Math.round(value)));
+    setAnimationDuration(nextDuration);
+    setDurationDraft(nextDuration.toString());
+    setFeedback(`时间上限已设为 ${nextDuration}s`);
+  };
+
+  useEffect(() => {
+    setDurationDraft(Math.round(animation.duration).toString());
+  }, [animation.duration]);
+
+  useEffect(() => {
+    if (!exportDialogOpen || exportRangeCustomized) {
+      return;
+    }
+    const nextRange = getDefaultExportSeconds();
+    applyExportSecondRange(nextRange.start, nextRange.end);
+  }, [
+    animation.duration,
+    animation.inPointTime,
+    animation.outPointTime,
+    applyExportSecondRange,
+    exportDialogOpen,
+    exportRangeCustomized,
+    getDefaultExportSeconds,
+  ]);
+
+  const buildExportRange = (): AnimationExportRange | undefined => {
+    const startValue = Number(exportStart);
+    const endValue = Number(exportEnd);
+    if (!Number.isFinite(startValue) || !Number.isFinite(endValue)) {
+      setExportError("请输入有效的起始和结束秒数");
+      return undefined;
+    }
+    if (startValue < 0 || endValue < 0) {
+      setExportError("起始和结束秒数不能小于 0");
+      return undefined;
+    }
+
+    const fps = animation.fps;
+    const maxFrame = Math.round(animation.duration * fps);
+    const { startFrame: clampedStartFrame, endFrame: clampedEndFrame } =
+      normalizeExportFrameRange(
+        Math.round(startValue * fps),
+        Math.round(endValue * fps),
+        maxFrame,
+      );
+
+    if (clampedEndFrame <= clampedStartFrame) {
+      setExportError("结束时间必须晚于起始时间");
+      return undefined;
+    }
+
+    return {
+      unit: "seconds",
+      start: clampedStartFrame / fps,
+      end: clampedEndFrame / fps,
+      startTime: clampedStartFrame / fps,
+      endTime: clampedEndFrame / fps,
+      startFrame: clampedStartFrame,
+      endFrame: clampedEndFrame,
+      frameCount: clampedEndFrame - clampedStartFrame + 1,
     };
-    window.dispatchEvent(new CustomEvent("animation-export-request", { detail }));
-    setExportDialogOpen(false);
-    setFeedback(`正在导出 ${range.frameCount} 帧视频`);
   };
 
   useEffect(() => {
     const handleProgress = (event: Event) => {
       const detail = (event as CustomEvent<{ current: number; total: number }>).detail;
-      setFeedback(`正在导出视频 ${detail.current}/${detail.total} 帧`);
+      setRecordingProgress(detail);
+      setRecordingDialogOpen(true);
+      setFeedback(`正在导出视频 ${detail.current}/${detail.total}`);
     };
     const handleComplete = (event: Event) => {
       const detail = (event as CustomEvent<{ filename: string; format: string }>).detail;
+      setRecordingDialogOpen(false);
       setFeedback(`已导出视频：${detail.filename}（${detail.format}）`);
     };
     const handleError = (event: Event) => {
       const detail = (event as CustomEvent<{ message: string }>).detail;
+      setRecordingDialogOpen(false);
       setFeedback(detail.message);
+    };
+    const handleCancelled = () => {
+      setRecordingDialogOpen(false);
+      setFeedback("视频录制已停止，当前视频未保存");
     };
     window.addEventListener("animation-export-progress", handleProgress);
     window.addEventListener("animation-export-complete", handleComplete);
     window.addEventListener("animation-export-error", handleError);
+    window.addEventListener("animation-export-cancelled", handleCancelled);
     return () => {
       window.removeEventListener("animation-export-progress", handleProgress);
       window.removeEventListener("animation-export-complete", handleComplete);
       window.removeEventListener("animation-export-error", handleError);
+      window.removeEventListener("animation-export-cancelled", handleCancelled);
     };
   }, []);
 
   const getKeyframeTitle = (keyframe: TimelineDisplayKeyframe) =>
-    `第 ${formatFrameLabel(keyframe.time, animation.fps)} 帧 · ${formatTimecode(
-      keyframe.time,
-      animation.fps,
-    )}`;
+    formatSecondLabel(keyframe.time);
 
   const getClipTitle = (clip: TimelineCameraClip) =>
-    `${clip.label} · ${formatTimecode(clip.startTime, animation.fps)} - ${formatTimecode(
-      clip.endTime,
-      animation.fps,
-    )}`;
+    `${clip.label} · 从 ${formatSecondLabel(clip.startTime)} 开始切换`;
 
   const getIoMarkerTitle = (type: "in" | "out", time: number) =>
-    `${type === "in" ? "入点" : "出点"} · 第 ${formatFrameLabel(
-      time,
-      animation.fps,
-    )} 帧 · ${formatTimecode(time, animation.fps)}`;
+    `${type === "in" ? "入点" : "出点"} · ${formatSecondLabel(time)}`;
+
+  const handleAddCameraToSequence = (cameraId: string) => {
+    const result = addCameraCutAtTime(cameraId);
+    setCameraSequenceMenuOpen(false);
+    setCameraSequenceMenuPosition(null);
+    if (result.ok) {
+      setActiveCamera(cameraId);
+      setCameraPreviewActive(true);
+    }
+    setFeedback(result.ok ? "已添加到机位序列" : result.message);
+  };
 
   const exportDurationSeconds = useMemo(() => {
     const range = exportRangeCustomized
-      ? getCurrentExportFrames()
-      : getDefaultExportFrames();
-    return range
-      ? formatSeconds(Math.max(0, (range.endFrame - range.startFrame + 1) / Math.max(animation.fps, 1)))
-      : "0";
-  }, [animation.fps, exportRangeCustomized, getCurrentExportFrames, getDefaultExportFrames]);
+      ? getCurrentExportSeconds()
+      : getDefaultExportSeconds();
+    return formatSeconds(Math.max(0, range.end - range.start));
+  }, [exportRangeCustomized, getCurrentExportSeconds, getDefaultExportSeconds]);
 
   const handleKeyframePointerDown = (
     event: ReactPointerEvent<HTMLButtonElement>,
@@ -1155,6 +1318,14 @@ export function TimelinePanel({
       refs: keyframe.refs,
       time: keyframe.time,
     });
+    setSelectedTimelineKeyframe({
+      id: keyframe.id,
+      refs: keyframe.refs,
+      time: keyframe.time,
+    });
+    setSelectedTrackId(null);
+    clearSelection();
+    setAnimationTime(keyframe.time);
     if (!editable) {
       return;
     }
@@ -1175,15 +1346,48 @@ export function TimelinePanel({
     laneClassName = "timeline-track-lane",
     interactive = false,
     editable = false,
+    muted = false,
+    trajectoryId?: string,
   ) => (
-    <div className={laneClassName} onPointerDown={handleTimelineLanePointerDown}>
+    <div
+      className={`${laneClassName} ${muted ? "is-muted" : ""}`}
+      onPointerDown={handleTimelineLanePointerDown}
+    >
+      {trajectoryId && keyframes.length > 1 ? keyframes.slice(0, -1).map((keyframe, index) => {
+        const next = keyframes[index + 1];
+        const id = `${trajectoryId}:${keyframe.id}:${next.id}`;
+        const left = (keyframe.time / Math.max(animation.duration, 0.001)) * 100;
+        const width = ((next.time - keyframe.time) / Math.max(animation.duration, 0.001)) * 100;
+        return (
+          <button
+            className={`timeline-trajectory-segment ${selectedTrajectoryId === id ? "is-selected" : ""}`}
+            key={id}
+            style={{ left: `${left}%`, width: `${Math.max(width, 0.5)}%` }}
+            type="button"
+            title="点击编辑轨迹；双击恢复直线"
+            onDoubleClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              window.dispatchEvent(new CustomEvent("trajectory-edit-change", { detail: { id, reset: true } }));
+            }}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setSelectedTrajectoryId(id);
+              window.dispatchEvent(new CustomEvent("trajectory-edit-change", { detail: { id, targetId: trajectoryId, startTime: keyframe.time, endTime: next.time } }));
+              setFeedback("已进入轨迹编辑，可拖动控制点");
+            }}
+          >
+          </button>
+        );
+      }) : null}
       {keyframes.map((keyframe) => (
         <button
           className={`timeline-keyframe ${
             Math.abs(keyframe.time - animation.currentTime) < 0.0001 ? "is-active" : ""
           } ${
             lastEditedKeyframeIds.includes(keyframe.id) ? "is-last-edited" : ""
-          } ${selectedKeyframe?.id === keyframe.id ? "is-selected" : ""}`}
+          } ${selectedKeyframe?.id === keyframe.id ? "is-selected" : ""} ${muted ? "is-muted" : ""}`}
           key={keyframe.id}
           style={{
             left: `${(keyframe.time / Math.max(animation.duration, 0.001)) * 100}%`,
@@ -1209,15 +1413,34 @@ export function TimelinePanel({
     </div>
   );
 
-  const renderCameraLane = () => (
+  const renderCameraClipLane = (
+    clip: TimelineCameraClip | undefined,
+    keyframes: TimelineDisplayKeyframe[],
+    muted = false,
+  ) => (
     <div
-      className="timeline-track-lane timeline-camera-lane"
+      className={`timeline-track-lane timeline-camera-lane ${muted ? "is-muted" : ""}`}
       onPointerDown={handleTimelineLanePointerDown}
     >
-      {!cameraCutClips.length ? (
-        <span className="timeline-camera-empty">未添机位序列</span>
-      ) : null}
-      {cameraCutClips.map((clip) => {
+      {!clip ? <span className="timeline-camera-empty">未设置机位范围</span> : null}
+      {keyframes.map((keyframe) => (
+        <button
+          className={`timeline-keyframe ${
+            Math.abs(keyframe.time - animation.currentTime) < 0.0001 ? "is-active" : ""
+          } ${
+            lastEditedKeyframeIds.includes(keyframe.id) ? "is-last-edited" : ""
+          } ${selectedKeyframe?.id === keyframe.id ? "is-selected" : ""} ${muted ? "is-muted" : ""}`}
+          key={keyframe.id}
+          style={{
+            left: `${(keyframe.time / Math.max(animation.duration, 0.001)) * 100}%`,
+          }}
+          title={getKeyframeTitle(keyframe)}
+          type="button"
+          onPointerDown={(event) => handleKeyframePointerDown(event, keyframe, true)}
+        />
+      ))}
+      {clip
+        ? (() => {
         const left = (clip.startTime / Math.max(animation.duration, 0.001)) * 100;
         const width =
           ((clip.endTime - clip.startTime) / Math.max(animation.duration, 0.001)) * 100;
@@ -1226,7 +1449,7 @@ export function TimelinePanel({
           <div
             className={`timeline-camera-clip ${
               selectedKeyframe?.id === clip.id ? "is-selected" : ""
-            }`}
+            } ${muted ? "is-muted" : ""}`}
             key={clip.id}
             role="button"
             style={{
@@ -1244,6 +1467,13 @@ export function TimelinePanel({
                 refs: clip.refs,
                 time: clip.startTime,
               });
+              setSelectedTimelineKeyframe(undefined);
+              setSelectedTrackId(null);
+              clearSelection();
+              setAnimationTime(clip.startTime);
+              setActiveCamera(clip.cameraId);
+              setCameraPreviewActive(true);
+              setFeedback(`已切换到${clip.label}`);
               if (!laneRect) {
                 return;
               }
@@ -1313,8 +1543,83 @@ export function TimelinePanel({
             )}
           </div>
         );
+      })()
+        : null}
+    </div>
+  );
+
+  const renderCameraSequenceLane = () => (
+    <div
+      className="timeline-track-lane timeline-camera-lane timeline-sequence-lane"
+      onPointerDown={handleTimelineLanePointerDown}
+    >
+      {!cameraSequenceClips.length ? (
+        <span className="timeline-camera-empty">
+          添加机位后，可在播放时切换机位视角
+        </span>
+      ) : null}
+      {cameraSequenceClips.map((clip) => {
+        const left = (clip.startTime / Math.max(animation.duration, 0.001)) * 100;
+        return (
+          <button
+            className={`timeline-camera-frame ${
+              selectedKeyframe?.id === clip.id ? "is-selected" : ""
+            }`}
+            key={clip.id}
+            style={{
+              left: `${left}%`,
+            }}
+            type="button"
+            tabIndex={0}
+            title={getClipTitle(clip)}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              const laneRect = event.currentTarget.parentElement?.getBoundingClientRect();
+              setSelectedKeyframe({
+                id: clip.id,
+                refs: clip.refs,
+                time: clip.startTime,
+              });
+              setSelectedTimelineKeyframe(undefined);
+              setSelectedTrackId(null);
+              clearSelection();
+              setAnimationTime(clip.startTime);
+              setActiveCamera(clip.cameraId);
+              setCameraPreviewActive(true);
+              setFeedback(`已切换到${clip.label}`);
+              if (!laneRect) {
+                return;
+              }
+              setDraggingKeyframe({
+                id: clip.id,
+                refs: clip.refs,
+                time: clip.startTime,
+                laneLeft: laneRect.left,
+                laneWidth: laneRect.width,
+              });
+            }}
+          >
+            <span className="timeline-camera-frame-diamond" />
+            <strong>{clip.label}</strong>
+          </button>
+        );
       })}
     </div>
+  );
+
+  const renderSummaryDots = () => (
+    <>
+      {timelineStopTimes.map((time) => (
+        <span
+          className="timeline-summary-dot"
+          key={`summary-dot-${time}`}
+          style={{
+            left: `${(time / Math.max(animation.duration, 0.001)) * 100}%`,
+          }}
+        />
+      ))}
+    </>
   );
 
   const renderGlobalPlayhead = () => (
@@ -1328,7 +1633,7 @@ export function TimelinePanel({
         } as CSSProperties
       }
     >
-      <span>{formatFrameLabel(animation.currentTime, animation.fps)}</span>
+      <span>{formatSecondLabel(animation.currentTime)}</span>
     </div>
   );
 
@@ -1399,58 +1704,130 @@ export function TimelinePanel({
     </>
   );
 
-  const getVisibleNodeKeyframes = (node: TimelineTreeNode) => {
-    const hasChildren = Boolean(node.children?.length);
-    const isExpanded = Boolean(expandedNodes[node.id]);
-    const subtitleVisible = !(hasChildren && isExpanded);
-    const suppressAggregatePreview =
-      Boolean(draggingKeyframe) &&
-      draggingKeyframe?.refs.length === 1 &&
-      draggingKeyframe.refs[0]?.kind === "channel" &&
-      hasChildren;
-    const visibleKeyframes = suppressAggregatePreview ? [] : node.keyframes;
+  const renderCameraSequenceMenu = () => {
+    if (
+      typeof document === "undefined" ||
+      !cameraSequenceMenuOpen ||
+      !cameraSequenceMenuPosition
+    ) {
+      return null;
+    }
 
+    return createPortal(
+      <div
+        className="timeline-camera-menu"
+        style={{
+          left: cameraSequenceMenuPosition.left,
+          top: cameraSequenceMenuPosition.top,
+        }}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+        }}
+      >
+        <div className="timeline-camera-menu-title">选择机位</div>
+        {cameras.length ? (
+          cameras.map((camera) => (
+            <button
+              key={camera.id}
+              className="timeline-camera-menu-item"
+              type="button"
+              onPointerDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                handleAddCameraToSequence(camera.id);
+              }}
+            >
+              <Camera size={13} />
+              <span>{camera.name}</span>
+            </button>
+          ))
+        ) : (
+          <span className="timeline-camera-menu-empty">当前暂无机位</span>
+        )}
+      </div>,
+      document.body,
+    );
+  };
+
+  const getVisibleNodeKeyframes = (node: TimelineTreeNode) => {
     return {
-      subtitleVisible,
-      visibleKeyframes,
+      subtitleVisible: true,
+      visibleKeyframes: node.keyframes,
     };
   };
 
   const renderTreeLabel = ({ node, depth }: VisibleTimelineNode) => {
-    const hasChildren = Boolean(node.children?.length);
-    const isExpanded = Boolean(expandedNodes[node.id]);
-    const labelClassName =
-      node.kind === "channel" ? "timeline-track-meta timeline-node-meta" : "timeline-binding-toggle";
-    const { subtitleVisible } = getVisibleNodeKeyframes(node);
+    const isSection = node.kind === "section";
+    const isCameraSequence = node.kind === "cameraSequence";
+    const labelClassName = isSection
+      ? "timeline-section-title"
+      : "timeline-track-meta timeline-node-meta";
+    const canSort = node.kind === "camera" || node.kind === "object";
 
     return (
-      <div className={`timeline-label-row timeline-node-${node.kind}`} key={`label:${node.id}`}>
-        {hasChildren ? (
-          <button
-            aria-expanded={isExpanded}
-            className={labelClassName}
-            style={{ "--timeline-indent": `${depth * 16}px` } as CSSProperties}
-            type="button"
-            onPointerDown={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              toggleNodeExpanded(node.id);
-            }}
-          >
-            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            <span className="timeline-binding-name">{node.label}</span>
-            {subtitleVisible && node.subtitle ? <small>{node.subtitle}</small> : null}
-          </button>
-        ) : (
-          <div
-            className={labelClassName}
-            style={{ "--timeline-indent": `${depth * 16}px` } as CSSProperties}
-          >
-            <span className="timeline-node-bullet" />
-            <strong>{node.label}</strong>
-            {node.subtitle ? <span>{node.subtitle}</span> : null}
-          </div>
-        )}
+      <div
+        className={`timeline-label-row timeline-node-${node.kind} ${
+          selectedTrackId === node.id ? "is-selected" : ""
+        } ${node.muted ? "is-muted" : ""}`}
+        key={`label:${node.id}`}
+        onPointerDown={(event) => {
+          if (!canSort) {
+            return;
+          }
+          event.preventDefault();
+          setSelectedTrackId(node.id);
+          setSelectedKeyframe(null);
+          setSelectedTimelineKeyframe(undefined);
+          clearSelection();
+        }}
+      >
+        <div
+          className={labelClassName}
+          style={{ "--timeline-indent": `${depth * 14}px` } as CSSProperties}
+        >
+          {canSort ? <GripVertical size={13} /> : null}
+          {isSection ? <span>{node.label}</span> : <strong>{node.label}</strong>}
+          {isCameraSequence ? (
+            <span className="timeline-camera-sequence-actions">
+              <button
+                className={`timeline-camera-add-button ${
+                  cameraSequenceMenuOpen ? "is-active" : ""
+                }`}
+                type="button"
+                title="添加机位到序列"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (!cameras.length) {
+                    setCameraSequenceMenuOpen(false);
+                    setCameraSequenceMenuPosition(null);
+                    setFeedback("当前暂无机位");
+                    return;
+                  }
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  const menuWidth = 188;
+                  const menuHeight = Math.min(280, 56 + cameras.length * 36);
+                  const belowTop = rect.bottom + 6;
+                  const top =
+                    belowTop + menuHeight <= window.innerHeight - 8
+                      ? belowTop
+                      : Math.max(8, rect.top - menuHeight - 6);
+                  setCameraSequenceMenuPosition({
+                    left: Math.min(
+                      window.innerWidth - menuWidth - 8,
+                      Math.max(8, rect.left),
+                    ),
+                    top,
+                  });
+                  setCameraSequenceMenuOpen((current) => !current);
+                }}
+              >
+                <Plus size={14} />
+              </button>
+            </span>
+          ) : null}
+          {!isSection && node.subtitle ? <span>{node.subtitle}</span> : null}
+        </div>
       </div>
     );
   };
@@ -1460,13 +1837,27 @@ export function TimelinePanel({
     const { visibleKeyframes } = getVisibleNodeKeyframes(node);
 
     return (
-      <div className={`timeline-lane-row timeline-node-group depth-${depth}`} key={`lane:${node.id}`}>
-        {renderLane(
-          visibleKeyframes,
-          laneClassName,
-          node.kind === "summary",
-          Boolean(visibleKeyframes.length),
-        )}
+      <div
+        className={`timeline-lane-row timeline-node-group depth-${depth} ${
+          selectedTrackId === node.id ? "is-selected" : ""
+        } ${node.muted ? "is-muted" : ""}`}
+        key={`lane:${node.id}`}
+        onPointerDown={() => {
+          if (node.kind === "camera" || node.kind === "object") {
+            setSelectedTrackId(node.id);
+            setSelectedKeyframe(null);
+            setSelectedTimelineKeyframe(undefined);
+            clearSelection();
+          }
+        }}
+      >
+        {node.kind === "section"
+          ? <div className="timeline-section-lane" />
+          : node.kind === "cameraSequence"
+            ? renderCameraSequenceLane()
+          : node.kind === "camera"
+            ? renderLane(visibleKeyframes, laneClassName, false, Boolean(visibleKeyframes.length), node.muted, node.id)
+            : renderLane(visibleKeyframes, laneClassName, false, Boolean(visibleKeyframes.length), node.muted, node.id)}
       </div>
     );
   };
@@ -1494,143 +1885,175 @@ export function TimelinePanel({
     });
   };
 
+  if (!expanded) {
+    return null;
+  }
+
   return (
     <section
-      className={`timeline-panel ${expanded ? "is-expanded" : "is-collapsed"}`}
-      style={expanded ? { height: `${height}px` } : undefined}
+      className="timeline-panel is-expanded"
+      style={{ height: `${height}px` }}
     >
-      {expanded ? (
-        <button
-          className="timeline-resize-handle"
-          type="button"
-          aria-label="调整关键帧时间线高度"
-          onPointerDown={(event) => {
-            event.preventDefault();
-            resizeStateRef.current = {
-              startY: event.clientY,
-              startHeight: height,
-            };
-          }}
-        >
-          <span />
-        </button>
-      ) : null}
-      <div className="timeline-dock-bar">
-        <button className="timeline-toggle-button" type="button" onClick={onToggle}>
-          <Video size={15} />
-          <span>关键帧时间线</span>
-          <ChevronUp className={expanded ? "is-expanded" : ""} size={15} />
-        </button>
-
-        <div className="timeline-dock-status">
-          <span>{selectionLabel}</span>
-          <span>{formatTimecode(animation.currentTime, animation.fps)}</span>
-        </div>
-
-        <div className="timeline-dock-actions">
-          <button
-            className={`timeline-auto-key-button ${
-              animation.autoKeyEnabled ? "is-active" : ""
-            }`}
-            type="button"
-            onClick={() => setAnimationAutoKeyEnabled(!animation.autoKeyEnabled)}
-          >
-            <Circle size={10} />
-            <span>自动关键帧</span>
-          </button>
-          <button className="timeline-primary-button" type="button" onClick={handleCapture}>
-            <KeyRound size={14} />
-            <span>手动插帧</span>
-          </button>
-          <button
-            className="timeline-ghost-button"
-            disabled={!selectedKeyframe}
-            type="button"
-            onClick={handleDeleteSelectedKeyframe}
-          >
-            <Trash2 size={14} />
-            <span>删除关键帧</span>
-          </button>
-        </div>
-      </div>
-
-      {expanded ? (
+      <button
+        className="timeline-resize-handle"
+        type="button"
+        aria-label="调整时间轴高度"
+        onPointerDown={(event) => {
+          event.preventDefault();
+          resizeStateRef.current = {
+            startY: event.clientY,
+            startHeight: height,
+          };
+        }}
+      >
+        <span />
+      </button>
         <div className="timeline-panel-body">
           <div className="timeline-editor-toolbar">
             <div className="timeline-toolbar-left">
-              <button className="timeline-editor-title" type="button" onClick={onToggle}>
-                <Video size={15} />
-                <strong>关键帧动画</strong>
-                <ChevronDown size={15} />
-              </button>
-              <label className="timeline-fps-field">
-                <span>帧率:</span>
-                <select
-                  value={animation.fps}
-                  onChange={(event) => setAnimationFps(Number(event.target.value))}
+              <div className="timeline-editor-title timeline-editor-title-static">
+                <TimelineMarkIcon size={15} />
+                <strong>时间轴</strong>
+              </div>
+              <div className="timeline-duration-control">
+                <button
+                  className={`timeline-duration-dragger ${draggingDuration ? "is-dragging" : ""}`}
+                  type="button"
+                  disabled={!timelineToolsEnabled}
+                  title="拖动调节时间长度"
+                  onPointerDown={(event) => {
+                    if (!timelineToolsEnabled) {
+                      return;
+                    }
+                    event.preventDefault();
+                    setDraggingDuration({
+                      startX: event.clientX,
+                      startDuration: Math.round(animation.duration),
+                    });
+                  }}
                 >
-                  {[24, 25, 30].map((fps) => (
-                    <option key={fps} value={fps}>
-                      {fps}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  <Clock3 size={14} />
+                </button>
+                <label className="timeline-duration-inline-input">
+                  <input
+                    min={1}
+                    max={90}
+                    disabled={!timelineToolsEnabled}
+                    type="number"
+                    value={durationDraft}
+                    onChange={(event) => setDurationDraft(event.target.value)}
+                    onBlur={() => applyDurationLimit(Number(durationDraft))}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.currentTarget.blur();
+                      }
+                    }}
+                  />
+                  <span>s</span>
+                </label>
+              </div>
             </div>
             <div className="timeline-toolbar-right">
               <div className="timeline-playback-group">
-                <button type="button" onClick={() => moveToAdjacentKeyframe(-1)}>
+                <button
+                  type="button"
+                  disabled={!timelineToolsEnabled}
+                  title="上一关键帧"
+                  onClick={() => moveToAdjacentKeyframe(-1)}
+                >
                   <SkipBack size={14} />
-                  <span>上一关键帧</span>
                 </button>
                 <button
                   type="button"
+                  disabled={!timelineToolsEnabled}
+                  title={animation.isPlaying ? "暂停" : "播放"}
                   onPointerDown={(event) => {
+                    if (!timelineToolsEnabled) {
+                      return;
+                    }
                     event.preventDefault();
                     event.stopPropagation();
                     toggleAnimationPlayback();
                   }}
                 >
                   {animation.isPlaying ? <Pause size={14} /> : <Play size={14} />}
-                  <span>{animation.isPlaying ? "暂停" : "播放"}</span>
                 </button>
-                <button type="button" onClick={() => moveToAdjacentKeyframe(1)}>
+                <button
+                  type="button"
+                  disabled={!timelineToolsEnabled}
+                  title="下一关键帧"
+                  onClick={() => moveToAdjacentKeyframe(1)}
+                >
                   <SkipForward size={14} />
-                  <span>下一关键帧</span>
+                </button>
+                <button
+                  className={`timeline-loop-button ${animation.loop ? "is-active" : ""}`}
+                  type="button"
+                  disabled={!timelineToolsEnabled}
+                  title={animation.loop ? "循环播放" : "单次播放"}
+                  onClick={toggleAnimationLoop}
+                >
+                  <Repeat2 size={14} />
                 </button>
               </div>
-              <button className="timeline-ghost-button" type="button" onClick={handleSetInPoint}>
-                <span>入点 I</span>
+              <button
+                className="timeline-range-button is-in"
+                type="button"
+                disabled={!timelineToolsEnabled}
+                onClick={handleSetInPoint}
+              >
+                <span>入点</span>
+                <strong>I</strong>
               </button>
-              <button className="timeline-ghost-button" type="button" onClick={handleSetOutPoint}>
-                <span>出点 O</span>
+              <button
+                className="timeline-range-button is-out"
+                type="button"
+                disabled={!timelineToolsEnabled}
+                onClick={handleSetOutPoint}
+              >
+                <span>出点</span>
+                <strong>O</strong>
               </button>
               <button
                 className={`timeline-auto-key-button ${
                   animation.autoKeyEnabled ? "is-active" : ""
                 }`}
                 type="button"
+                disabled={!timelineToolsEnabled}
+                title="被修改过的属性自动插帧"
                 onClick={() => setAnimationAutoKeyEnabled(!animation.autoKeyEnabled)}
               >
-                <Circle size={10} />
-                <span>自动关键帧</span>
+                <TimerReset size={14} />
+                <span>自动插帧</span>
               </button>
-              <button className="timeline-primary-button" type="button" onClick={handleCapture}>
+              <button
+                className={`timeline-primary-button ${canInsertSelectedAsset ? "is-ready" : ""}`}
+                type="button"
+                disabled={!canInsertSelectedAsset}
+                title={
+                  canInsertSelectedAsset
+                    ? "将当前选中资产添加到时间轴并插入关键帧"
+                    : "请先从资产列表选择资产"
+                }
+                onClick={handleCapture}
+              >
                 <KeyRound size={14} />
-                <span>手动插帧</span>
+                <span>插帧</span>
               </button>
               <button
                 className="timeline-ghost-button"
-                disabled={!selectedKeyframe}
                 type="button"
+                disabled={!timelineToolsEnabled || !selectedKeyframe}
+                title={selectedKeyframe ? "删除所选内容" : "请先选择关键帧或机位范围"}
                 onClick={handleDeleteSelectedKeyframe}
               >
                 <Trash2 size={14} />
                 <span>删除</span>
               </button>
               <button
-                className="timeline-ghost-button"
+                className="timeline-export-button"
                 type="button"
+                disabled={!timelineToolsEnabled}
                 onClick={openExportDialog}
               >
                 <Download size={14} />
@@ -1639,69 +2062,34 @@ export function TimelinePanel({
             </div>
           </div>
 
-          {exportDialogOpen ? (
-            <div className="timeline-export-popover" role="dialog" aria-label="导出视频">
-              <div className="timeline-export-header">
-                <strong>导出视频</strong>
-                <span>按帧设置范围</span>
-              </div>
-              <div className="timeline-export-fields">
-                <label className="timeline-number-field">
-                  <span>起始</span>
-                  <input
-                    min={0}
-                    max={getExportUnitMax()}
-                    step={1}
-                    type="number"
-                    value={exportStart}
-                    onChange={(event) => {
-                      setExportRangeCustomized(true);
-                      setExportStart(event.target.value);
-                      setExportError("");
+          {recordingDialogOpen ? (
+            <div className="timeline-recording-overlay" role="dialog" aria-label="视频保存中">
+              <div className="timeline-recording-dialog">
+                <div className="timeline-export-header">
+                  <strong>视频保存中</strong>
+                </div>
+                <div className="timeline-recording-status">
+                  <span className="timeline-recording-spinner" />
+                  <span>
+                    {recordingProgress
+                      ? `${recordingProgress.current}/${recordingProgress.total}`
+                      : "准备录制"}
+                  </span>
+                </div>
+                <div className="timeline-export-summary">
+                  <span>录制范围由入点 / 出点控制</span>
+                </div>
+                <div className="timeline-export-actions">
+                  <button
+                    className="timeline-ghost-button"
+                    type="button"
+                    onClick={() => {
+                      window.dispatchEvent(new Event("animation-export-cancel"));
                     }}
-                  />
-                  <small>帧</small>
-                </label>
-                <label className="timeline-number-field">
-                  <span>结束</span>
-                  <input
-                    min={0}
-                    max={getExportUnitMax()}
-                    step={1}
-                    type="number"
-                    value={exportEnd}
-                    onChange={(event) => {
-                      setExportRangeCustomized(true);
-                      setExportEnd(event.target.value);
-                      setExportError("");
-                    }}
-                  />
-                  <small>帧</small>
-                </label>
-              </div>
-              <div className="timeline-export-summary">
-                <span>帧率 {animation.fps} fps</span>
-                <span>视频时长 {exportDurationSeconds} s</span>
-              </div>
-              {exportError ? (
-                <div className="timeline-export-error">{exportError}</div>
-              ) : null}
-              <div className="timeline-export-actions">
-                <button
-                  className="timeline-ghost-button"
-                  type="button"
-                  onClick={() => setExportDialogOpen(false)}
-                >
-                  取消
-                </button>
-                <button
-                  className="timeline-primary-button"
-                  type="button"
-                  onClick={handleExportAnimation}
-                >
-                  <Download size={14} />
-                  <span>导出 MP4</span>
-                </button>
+                  >
+                    取消录制
+                  </button>
+                </div>
               </div>
             </div>
           ) : null}
@@ -1711,35 +2099,11 @@ export function TimelinePanel({
           >
             <div className="timeline-left-head timeline-timecode-head">
               <span className="timeline-timecode-value">
-                {formatTimecode(animation.currentTime, animation.fps)}
+                {formatSecondLabel(animation.currentTime)}
               </span>
-            </div>
-            <div className="timeline-camera-label" ref={cameraMenuRef}>
-              <span>机位序列</span>
-              <button
-                className="timeline-camera-add-button"
-                type="button"
-                title="添加机位序列"
-                onClick={() => setCameraMenuOpen((current) => !current)}
-              >
-                <Plus size={14} />
-                <Camera size={12} />
-              </button>
-              {cameraMenuOpen ? (
-                <div className="timeline-camera-menu">
-                  {cameras.map((camera) => (
-                    <button
-                      key={camera.id}
-                      className="timeline-camera-menu-item"
-                      type="button"
-                      onClick={() => handleCameraCutCapture(camera.id)}
-                    >
-                      <Camera size={13} />
-                      <span>{camera.name}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
+              <span className="timeline-duration-total">
+                / {formatSeconds(animation.duration)}s
+              </span>
             </div>
             <div
               className="timeline-track-list timeline-label-list"
@@ -1748,7 +2112,11 @@ export function TimelinePanel({
             >
               {visibleTimelineNodes.map((item) => renderTreeLabel(item))}
             </div>
-            <div className="timeline-scroll-pane" ref={timelineScrollRef}>
+            <div
+              className="timeline-scroll-pane"
+              ref={timelineScrollRef}
+              onWheel={handleTimelineWheel}
+            >
               <div
                 className="timeline-scroll-content"
                 style={
@@ -1764,9 +2132,9 @@ export function TimelinePanel({
                       {tick.label}
                     </span>
                   ))}
+                  {renderSummaryDots()}
                   {renderIoMarkers()}
                 </div>
-                {renderCameraLane()}
                 <div
                   className="timeline-track-list timeline-tree-list timeline-lane-list"
                   ref={timelineRightListRef}
@@ -1774,12 +2142,21 @@ export function TimelinePanel({
                 >
                   {visibleTimelineNodes.map((item) => renderTreeLane(item))}
                 </div>
+                {!timelineHasTracks ? (
+                  <div className="timeline-empty-state timeline-empty-state-inline">
+                    <span>
+                      {canInsertSelectedAsset
+                        ? "点击插针，将当前资产添加到时间轴"
+                        : "请选择左侧资产，并点击插针添加到时间轴"}
+                    </span>
+                  </div>
+                ) : null}
                 {renderGlobalPlayhead()}
               </div>
             </div>
           </div>
+          {renderCameraSequenceMenu()}
         </div>
-      ) : null}
     </section>
   );
 }

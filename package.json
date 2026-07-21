@@ -1,4 +1,12 @@
 {
+  "name": "3d-director",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A lightweight 3D previsualization workbench for AI video direction.",
+  "keywords": ["3d", "previsualization", "storyboard", "timeline", "threejs", "ai-video"],
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
