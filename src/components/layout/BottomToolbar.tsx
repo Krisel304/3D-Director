@@ -1,7 +1,9 @@
 import {
+  Box,
   Camera,
   CircleHelp,
   ChevronDown,
+  ChevronRight,
   ImagePlus,
   Move3D,
   MousePointer2,
@@ -21,7 +23,7 @@ import { OUTPUT_FRAME_PRESETS } from "../../domain/outputFrames";
 import type { ToolMode, TransformMode } from "../../domain/projectTypes";
 import { useProjectStore } from "../../store/projectStore";
 
-type OpenMenu = "move" | "object" | "aspect" | undefined;
+type OpenMenu = "move" | "object" | "space" | "aspect" | undefined;
 
 const moveOptions: Array<{
   id: TransformMode;
@@ -56,6 +58,7 @@ export function BottomToolbar({
   const glbInputRef = useRef<HTMLInputElement>(null);
   const panoramaInputRef = useRef<HTMLInputElement>(null);
   const [openMenu, setOpenMenu] = useState<OpenMenu>();
+  const [crowdExpanded, setCrowdExpanded] = useState(false);
   const [crowdRows, setCrowdRows] = useState(3);
   const [crowdColumns, setCrowdColumns] = useState(3);
   const [crowdSpacing, setCrowdSpacing] = useState(1.8);
@@ -112,6 +115,14 @@ export function BottomToolbar({
     setActiveTool("panorama");
     panoramaInputRef.current?.click();
     setOpenMenu(undefined);
+  };
+
+  const notifyUnavailableImport = (source: "canvas" | "space", assetType: "scene" | "panorama") => {
+    const assetLabel = assetType === "scene" ? "空间资产" : "全景图";
+    const sourceLabel = source === "canvas" ? "当前画布" : "空间";
+    useProjectStore
+      .getState()
+      .setImportError(`${sourceLabel}导入${assetLabel}将在接入资产库后提供；当前可使用本地上传。`);
   };
 
   const handleGlbFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -213,7 +224,7 @@ export function BottomToolbar({
         ref={glbInputRef}
         className="file-input"
         type="file"
-        accept=".glb,.obj,.3dgs,model/gltf-binary,text/plain"
+        accept=".glb,.obj,.3dgs,.spz,model/gltf-binary,text/plain"
         onChange={handleGlbFileChange}
       />
       <input
@@ -283,7 +294,9 @@ export function BottomToolbar({
               <span className="toolbar-menu-main">
                 <Upload size={14} />
                 <span>本地上传</span>
-                <span title="支持 GLB、OBJ；3DGS 请先转换为 GLB"><CircleHelp size={13} /></span>
+                <span title="支持 GLB / OBJ / 3DGS / SPZ 格式上传">
+                  <CircleHelp size={13} />
+                </span>
               </span>
             </button>
             <button
@@ -307,67 +320,78 @@ export function BottomToolbar({
               </span>
             </button>
             <div className="toolbar-menu-section">
-              <div className="toolbar-menu-title">
-                <Users size={14} />
-                <span>群众</span>
-              </div>
-              <div className="toolbar-inline-fields">
-                <label>
-                  <span>行数</span>
-                  <input
-                    className="toolbar-mini-input"
-                    max={24}
-                    min={1}
-                    type="number"
-                    value={crowdRows}
-                    onChange={(event) =>
-                      setCrowdRows(Math.max(1, Number(event.currentTarget.value || 1)))
-                    }
-                  />
-                </label>
-                <label>
-                  <span>列数</span>
-                  <input
-                    className="toolbar-mini-input"
-                    max={24}
-                    min={1}
-                    type="number"
-                    value={crowdColumns}
-                    onChange={(event) =>
-                      setCrowdColumns(Math.max(1, Number(event.currentTarget.value || 1)))
-                    }
-                  />
-                </label>
-                <label>
-                  <span>间距</span>
-                  <input
-                    className="toolbar-mini-input"
-                    max={20}
-                    min={0.5}
-                    step={0.1}
-                    type="number"
-                    value={crowdSpacing}
-                    onChange={(event) =>
-                      setCrowdSpacing(Math.max(0.5, Number(event.currentTarget.value || 0.5)))
-                    }
-                  />
-                </label>
-              </div>
               <button
-                className="toolbar-inline-action"
+                className="toolbar-menu-disclosure"
                 type="button"
-                onClick={() =>
-                    handleInsertObject({
-                      kind: "crowd",
-                      variant: "male",
-                      rows: crowdRows,
-                      columns: crowdColumns,
-                      spacing: crowdSpacing,
-                    })
-                  }
-                >
-                  插入群众
-                </button>
+                onClick={() => setCrowdExpanded((value) => !value)}
+              >
+                <span className="toolbar-menu-title">
+                  <Users size={14} />
+                  <span>群众</span>
+                </span>
+                {crowdExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              </button>
+              {crowdExpanded ? (
+                <>
+                  <div className="toolbar-inline-fields">
+                    <label>
+                      <span>行数</span>
+                      <input
+                        className="toolbar-mini-input"
+                        max={24}
+                        min={1}
+                        type="number"
+                        value={crowdRows}
+                        onChange={(event) =>
+                          setCrowdRows(Math.max(1, Number(event.currentTarget.value || 1)))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>列数</span>
+                      <input
+                        className="toolbar-mini-input"
+                        max={24}
+                        min={1}
+                        type="number"
+                        value={crowdColumns}
+                        onChange={(event) =>
+                          setCrowdColumns(Math.max(1, Number(event.currentTarget.value || 1)))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>间距</span>
+                      <input
+                        className="toolbar-mini-input"
+                        max={20}
+                        min={0.5}
+                        step={0.1}
+                        type="number"
+                        value={crowdSpacing}
+                        onChange={(event) =>
+                          setCrowdSpacing(Math.max(0.5, Number(event.currentTarget.value || 0.5)))
+                        }
+                      />
+                    </label>
+                  </div>
+                  <button
+                    className="toolbar-inline-action"
+                    type="button"
+                    onClick={() =>
+                      handleInsertObject({
+                        kind: "crowd",
+                        variant: "male",
+                        rows: crowdRows,
+                        columns: crowdColumns,
+                        spacing: crowdSpacing,
+                      })
+                    }
+                  >
+                    插入群众
+                  </button>
+                </>
+              ) : null}
             </div>
             <div className="toolbar-menu-section">
               <div className="toolbar-menu-title">
@@ -423,14 +447,59 @@ export function BottomToolbar({
         ) : null}
       </div>
 
-      <button
-        className={`toolbar-pill ${activeTool === "panorama" ? "is-active" : ""}`}
-        type="button"
-        onClick={triggerPanoramaImport}
-      >
-        <ImagePlus size={16} />
-        <span>全景图</span>
-      </button>
+      <div className="toolbar-menu-group">
+        <button
+          className={`toolbar-pill ${activeTool === "panorama" ? "is-active" : ""}`}
+          type="button"
+          onClick={() => {
+            setActiveTool("panorama");
+            setOpenMenu(openMenu === "space" ? undefined : "space");
+          }}
+        >
+          <Box size={16} />
+          <span>添加空间资产</span>
+          <ChevronDown size={14} />
+        </button>
+        {openMenu === "space" ? (
+          <div className="toolbar-menu wide-menu space-asset-menu">
+            <div className="toolbar-menu-label">空间资产</div>
+            <div className="toolbar-menu-title">
+              <Box size={14} />
+              <span>3D 世界 / 3D 素材</span>
+            </div>
+            <button className="toolbar-menu-item" type="button" onClick={triggerGlbImport}>
+              <span className="toolbar-menu-main">
+                <Upload size={14} />
+                <span>本地上传</span>
+                <span title="支持 GLB / OBJ / 3DGS / SPZ 格式上传">
+                  <CircleHelp size={13} />
+                </span>
+              </span>
+            </button>
+            <button className="toolbar-menu-item" type="button" onClick={() => notifyUnavailableImport("canvas", "scene")}>
+              <span className="toolbar-menu-main"><span>从当前画布中导入</span></span>
+            </button>
+            <button className="toolbar-menu-item" type="button" onClick={() => notifyUnavailableImport("space", "scene")}>
+              <span className="toolbar-menu-main"><span>从空间中导入</span></span>
+            </button>
+            <div className="toolbar-menu-section">
+              <div className="toolbar-menu-title">
+                <ImagePlus size={14} />
+                <span>全景图</span>
+              </div>
+              <button className="toolbar-menu-item" type="button" onClick={triggerPanoramaImport}>
+                <span className="toolbar-menu-main"><Upload size={14} /><span>本地上传</span></span>
+              </button>
+              <button className="toolbar-menu-item" type="button" onClick={() => notifyUnavailableImport("canvas", "panorama")}>
+                <span className="toolbar-menu-main"><span>从当前画布中导入</span></span>
+              </button>
+              <button className="toolbar-menu-item" type="button" onClick={() => notifyUnavailableImport("space", "panorama")}>
+                <span className="toolbar-menu-main"><span>从空间中导入</span></span>
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
 
       <button
         className={`toolbar-pill ${activeTool === "camera" ? "is-active" : ""}`}

@@ -2598,6 +2598,32 @@ h2 {
   font-size: 12px;
 }
 
+.toolbar-menu-label {
+  color: #f0f0f0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.toolbar-menu-disclosure {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 30px;
+  padding: 0;
+  color: #d8d8d8;
+  background: transparent;
+  cursor: pointer;
+}
+
+.toolbar-menu-disclosure:hover {
+  color: #ffffff;
+}
+
+.space-asset-menu {
+  min-width: 230px;
+}
+
 .toolbar-inline-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

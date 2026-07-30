@@ -186,13 +186,13 @@ export function LeftPanel() {
         onClick={() => fileInputRef.current?.click()}
       >
         导入模型
-        <span className="import-help" title="支持 GLB、OBJ；3DGS 请先转换为 GLB"><CircleHelp size={13} /></span>
+        <span className="import-help" title="支持 GLB / OBJ / 3DGS / SPZ 格式上传"><CircleHelp size={13} /></span>
       </button>
       <input
         ref={fileInputRef}
         className="file-input"
         type="file"
-        accept=".glb,.obj,.3dgs,model/gltf-binary,text/plain"
+        accept=".glb,.obj,.3dgs,.spz,model/gltf-binary,text/plain"
         data-glb-input
         onChange={handleFileChange}
       />
