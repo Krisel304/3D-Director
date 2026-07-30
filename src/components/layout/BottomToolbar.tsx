@@ -24,6 +24,7 @@ import type { ToolMode, TransformMode } from "../../domain/projectTypes";
 import { useProjectStore } from "../../store/projectStore";
 
 type OpenMenu = "move" | "object" | "space" | "aspect" | undefined;
+type SpaceAssetPicker = "scene" | "panorama" | undefined;
 
 const moveOptions: Array<{
   id: TransformMode;
@@ -58,6 +59,7 @@ export function BottomToolbar({
   const glbInputRef = useRef<HTMLInputElement>(null);
   const panoramaInputRef = useRef<HTMLInputElement>(null);
   const [openMenu, setOpenMenu] = useState<OpenMenu>();
+  const [spaceAssetPicker, setSpaceAssetPicker] = useState<SpaceAssetPicker>();
   const [crowdExpanded, setCrowdExpanded] = useState(false);
   const [crowdRows, setCrowdRows] = useState(3);
   const [crowdColumns, setCrowdColumns] = useState(3);
@@ -453,7 +455,11 @@ export function BottomToolbar({
           type="button"
           onClick={() => {
             setActiveTool("panorama");
-            setOpenMenu(openMenu === "space" ? undefined : "space");
+            const nextMenu = openMenu === "space" ? undefined : "space";
+            setOpenMenu(nextMenu);
+            if (!nextMenu) {
+              setSpaceAssetPicker(undefined);
+            }
           }}
         >
           <Box size={16} />
@@ -463,40 +469,56 @@ export function BottomToolbar({
         {openMenu === "space" ? (
           <div className="toolbar-menu wide-menu space-asset-menu">
             <div className="toolbar-menu-label">空间资产</div>
-            <div className="toolbar-menu-title">
-              <Box size={14} />
-              <span>3D 世界 / 3D 素材</span>
-            </div>
-            <button className="toolbar-menu-item" type="button" onClick={triggerGlbImport}>
+            <button
+              className={`toolbar-space-category ${spaceAssetPicker === "scene" ? "is-active" : ""}`}
+              type="button"
+              onClick={() => setSpaceAssetPicker((value) => value === "scene" ? undefined : "scene")}
+            >
               <span className="toolbar-menu-main">
-                <Upload size={14} />
-                <span>本地上传</span>
+                <Box size={14} />
+                <span>3D 世界 / 3D 素材</span>
                 <span title="支持 GLB / OBJ / 3DGS / SPZ 格式上传">
                   <CircleHelp size={13} />
                 </span>
               </span>
+              <ChevronRight size={14} />
             </button>
-            <button className="toolbar-menu-item" type="button" onClick={() => notifyUnavailableImport("canvas", "scene")}>
-              <span className="toolbar-menu-main"><span>从当前画布中导入</span></span>
+            <button
+              className={`toolbar-space-category ${spaceAssetPicker === "panorama" ? "is-active" : ""}`}
+              type="button"
+              onClick={() => setSpaceAssetPicker((value) => value === "panorama" ? undefined : "panorama")}
+            >
+              <span className="toolbar-menu-main"><ImagePlus size={14} /><span>全景图</span></span>
+              <ChevronRight size={14} />
             </button>
-            <button className="toolbar-menu-item" type="button" onClick={() => notifyUnavailableImport("space", "scene")}>
-              <span className="toolbar-menu-main"><span>从空间中导入</span></span>
-            </button>
-            <div className="toolbar-menu-section">
-              <div className="toolbar-menu-title">
-                <ImagePlus size={14} />
-                <span>全景图</span>
+            {spaceAssetPicker ? (
+              <div className="space-import-popover">
+                <div className="toolbar-menu-label">
+                  {spaceAssetPicker === "scene" ? "3D 世界 / 3D 素材" : "全景图"}
+                </div>
+                <button
+                  className="toolbar-menu-item"
+                  type="button"
+                  onClick={spaceAssetPicker === "scene" ? triggerGlbImport : triggerPanoramaImport}
+                >
+                  <span className="toolbar-menu-main"><Upload size={14} /><span>本地上传</span></span>
+                </button>
+                <button
+                  className="toolbar-menu-item"
+                  type="button"
+                  onClick={() => notifyUnavailableImport("canvas", spaceAssetPicker)}
+                >
+                  <span className="toolbar-menu-main"><span>从当前画布中导入</span></span>
+                </button>
+                <button
+                  className="toolbar-menu-item"
+                  type="button"
+                  onClick={() => notifyUnavailableImport("space", spaceAssetPicker)}
+                >
+                  <span className="toolbar-menu-main"><span>从空间中导入</span></span>
+                </button>
               </div>
-              <button className="toolbar-menu-item" type="button" onClick={triggerPanoramaImport}>
-                <span className="toolbar-menu-main"><Upload size={14} /><span>本地上传</span></span>
-              </button>
-              <button className="toolbar-menu-item" type="button" onClick={() => notifyUnavailableImport("canvas", "panorama")}>
-                <span className="toolbar-menu-main"><span>从当前画布中导入</span></span>
-              </button>
-              <button className="toolbar-menu-item" type="button" onClick={() => notifyUnavailableImport("space", "panorama")}>
-                <span className="toolbar-menu-main"><span>从空间中导入</span></span>
-              </button>
-            </div>
+            ) : null}
           </div>
         ) : null}
       </div>
