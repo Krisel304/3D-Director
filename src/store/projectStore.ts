@@ -21,6 +21,10 @@ import {
   setAnimationOutPoint,
   upsertAnimationCameraCut,
 } from "../domain/animationTimeline";
+import {
+  getCameraMoveEndState,
+  type CameraMovePresetId,
+} from "../domain/cameraMoves";
 import { defaultProject } from "../domain/defaultProject";
 import { getIkControlBones, isIkControlBoneName } from "../domain/rigUtils";
 import type {
@@ -140,6 +144,10 @@ type ProjectStore = ProjectState & {
   stepAnimation: (deltaSeconds: number) => void;
   captureCurrentKeyframe: () => { ok: true } | { ok: false; message: string };
   captureSelectedAssetsKeyframes: () => { ok: true; count: number; bindings: ProjectState["animation"]["bindings"] } | { ok: false; message: string };
+  applyCameraMovePreset: (
+    cameraId: string,
+    presetId: CameraMovePresetId,
+  ) => { ok: true; startTime: number; endTime: number } | { ok: false; message: string };
   addCurrentCameraCut: () => { ok: true } | { ok: false; message: string };
   addCameraCutAtTime: (cameraId: string) => { ok: true } | { ok: false; message: string };
   removeSelectedTimelineKeyframe: (refs: TimelineKeyframeRef[]) => void;
@@ -288,6 +296,36 @@ function captureCameraCutForCamera(state: ProjectState, cameraId?: string) {
       state.animation.fps,
     ),
   };
+}
+
+function getCameraMoveRange(state: ProjectState, cameraId: string) {
+  const duration = clampAnimationDuration(state.animation.duration);
+  const fps = clampAnimationFps(state.animation.fps);
+  const frameDuration = 1 / fps;
+  const currentTime = clampAnimationTime(state.animation.currentTime, duration, fps);
+  const binding = state.animation.bindings.find(
+    (item) => item.targetType === "camera" && item.targetId === cameraId,
+  );
+  const keyframeTimes = Array.from(
+    new Set(
+      binding?.channels.flatMap((channel) => channel.keyframes.map((keyframe) => keyframe.time)) ?? [],
+    ),
+  ).sort((left, right) => left - right);
+  const previousTime = [...keyframeTimes].reverse().find((time) => time < currentTime - frameDuration / 2);
+  const nextTime = keyframeTimes.find((time) => time > currentTime + frameDuration / 2);
+  const startsInsideSegment = previousTime !== undefined && nextTime !== undefined;
+  const startTime = startsInsideSegment ? nextTime : currentTime;
+  const nextBlockingTime = keyframeTimes.find((time) => time > startTime + frameDuration / 2);
+  const desiredEndTime = Math.min(duration, startTime + 3);
+  const endTime =
+    nextBlockingTime !== undefined && nextBlockingTime < desiredEndTime
+      ? Math.max(startTime, nextBlockingTime - frameDuration)
+      : desiredEndTime;
+
+  if (endTime - startTime < frameDuration / 2) {
+    return { ok: false as const, message: "当前机位后方没有足够空间添加 3 秒运镜" };
+  }
+  return { ok: true as const, startTime, endTime };
 }
 
 function normalizeExistingCameraCuts(
@@ -1546,6 +1584,41 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       },
     }));
     return { ok: true as const, count: selected.length, bindings };
+  },
+  applyCameraMovePreset: (cameraId, presetId) => {
+    const state = get();
+    const camera = state.cameras.find((item) => item.id === cameraId);
+    if (!camera) {
+      return { ok: false as const, message: "当前机位不存在" };
+    }
+    if (camera.locked) {
+      return { ok: false as const, message: "当前机位已锁定，无法添加运镜" };
+    }
+    const range = getCameraMoveRange(state, cameraId);
+    if (!range.ok) {
+      return range;
+    }
+
+    const sampledStart = applyAnimationToProjectState(state, range.startTime).cameras.find(
+      (item) => item.id === cameraId,
+    ) ?? camera;
+    const endCamera = getCameraMoveEndState(sampledStart, presetId);
+    const bindingsWithStart = recordCameraChannels(
+      state.animation.bindings,
+      sampledStart,
+      range.startTime,
+    );
+    const bindings = recordCameraChannels(bindingsWithStart, endCamera, range.endTime);
+
+    set((current) => {
+      const animation = { ...current.animation, bindings };
+      const sampled = applyAnimationToProjectState(
+        { objects: current.objects, cameras: current.cameras, animation },
+        animation.currentTime,
+      );
+      return { ...sampled, animation };
+    });
+    return { ok: true as const, startTime: range.startTime, endTime: range.endTime };
   },
   addCurrentCameraCut: () => {
     const state = useProjectStore.getState();

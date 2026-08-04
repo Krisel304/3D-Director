@@ -127,7 +127,7 @@ function GroupInspector({ groupId }: { groupId: string }) {
   );
 }
 
-export function RightPanel() {
+export function RightPanel({ animationMode = false }: { animationMode?: boolean }) {
   const activeObjectId = useProjectStore((state) => state.activeObjectId);
   const selectedCameraId = useProjectStore((state) => state.selectedCameraId);
   const selectedTimelineKeyframe = useProjectStore(
@@ -154,7 +154,7 @@ export function RightPanel() {
         ) : activeObject ? (
           <ObjectInspector object={activeObject} />
         ) : activeCamera ? (
-          <CameraInspector />
+          <CameraInspector animationMode={animationMode} />
         ) : (
           <WorldInspector />
         )}

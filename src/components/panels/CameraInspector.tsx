@@ -15,6 +15,7 @@ import {
 import * as THREE from "three";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { resolveCameraTarget } from "../../domain/cameraTargets";
+import { CAMERA_MOVE_PRESETS } from "../../domain/cameraMoves";
 import { resolvePlaybackCameraId } from "../../domain/animationTimeline";
 import type {
   CameraMode,
@@ -97,7 +98,7 @@ function CameraPreview({
   );
 }
 
-export function CameraInspector() {
+export function CameraInspector({ animationMode = false }: { animationMode?: boolean }) {
   const targetInputRef = useRef<HTMLInputElement>(null);
   const animation = useProjectStore((state) => state.animation);
   const selectedCameraId = useProjectStore((state) => state.selectedCameraId);
@@ -115,9 +116,12 @@ export function CameraInspector() {
   const setCameraPreviewActive = useProjectStore(
     (state) => state.setCameraPreviewActive,
   );
+  const applyCameraMovePreset = useProjectStore((state) => state.applyCameraMovePreset);
   const [targetSearch, setTargetSearch] = useState("");
   const [targetSuggestOpen, setTargetSuggestOpen] = useState(false);
   const [previewImage, setPreviewImage] = useState<string>();
+  const [activeTab, setActiveTab] = useState<"properties" | "moves">("properties");
+  const [moveFeedback, setMoveFeedback] = useState("");
   const inspectedCameraId = useMemo(() => {
     if (animation.isPlaying) {
       return resolvePlaybackCameraId(
@@ -172,6 +176,13 @@ export function CameraInspector() {
   useEffect(() => {
     setPreviewImage(undefined);
   }, [camera?.id]);
+
+  useEffect(() => {
+    if (!animationMode) {
+      setActiveTab("properties");
+      setMoveFeedback("");
+    }
+  }, [animationMode]);
 
   const targetCandidates = useMemo(() => {
     const query = targetSearch.trim().toLowerCase();
@@ -285,6 +296,65 @@ export function CameraInspector() {
           </button>
         </div>
       </div>
+
+      {animationMode ? (
+        <div className="camera-inspector-tabs" role="tablist" aria-label="机位编辑方式">
+          <button
+            className={activeTab === "properties" ? "is-active" : ""}
+            role="tab"
+            type="button"
+            aria-selected={activeTab === "properties"}
+            onClick={() => setActiveTab("properties")}
+          >
+            属性
+          </button>
+          <button
+            className={activeTab === "moves" ? "is-active" : ""}
+            role="tab"
+            type="button"
+            aria-selected={activeTab === "moves"}
+            onClick={() => setActiveTab("moves")}
+          >
+            运镜
+          </button>
+        </div>
+      ) : null}
+
+      {animationMode && activeTab === "moves" ? (
+        <div className="camera-move-panel" role="tabpanel">
+          <div className="camera-move-heading">
+            <div>
+              <h3>基础运镜</h3>
+              <p>点击后从当前 CTI 自动生成首尾关键帧</p>
+            </div>
+            <span>3s</span>
+          </div>
+          <div className="camera-move-grid">
+            {CAMERA_MOVE_PRESETS.map((preset) => (
+              <button
+                className="camera-move-card"
+                disabled={disabled}
+                key={preset.id}
+                type="button"
+                onClick={() => {
+                  const result = applyCameraMovePreset(camera.id, preset.id);
+                  setMoveFeedback(
+                    result.ok
+                      ? `${preset.label}已添加：${result.startTime.toFixed(2)}s - ${result.endTime.toFixed(2)}s`
+                      : result.message,
+                  );
+                }}
+              >
+                <Video size={16} />
+                <strong>{preset.label}</strong>
+                <span>{preset.description}</span>
+              </button>
+            ))}
+          </div>
+          {moveFeedback ? <div className="camera-move-feedback">{moveFeedback}</div> : null}
+        </div>
+      ) : (
+        <>
 
       <CameraPreview
         camera={camera}
@@ -531,6 +601,8 @@ export function CameraInspector() {
           </div>
         </div>
       </div>
+        </>
+      )}
     </section>
   );
 }

@@ -110,7 +110,7 @@ function WorkbenchApp() {
             onTimelineToggle={() => setTimelineExpanded((current) => !current)}
           />
         </div>
-        <RightPanel />
+        <RightPanel animationMode={timelineExpanded} />
       </section>
       {runtimeError ? (
         <div className="runtime-error-overlay" role="alert">
