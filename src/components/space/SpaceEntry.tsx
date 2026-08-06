@@ -87,11 +87,7 @@ export function SpaceEntry({ onEnter }: { onEnter: () => void }) {
         </div>
 
         <article className="space-node-card">
-          <div className="space-node-heading">
-            <div>
-              <span className="space-node-kicker">空间节点</span>
-              <h1>3D 空间</h1>
-            </div>
+          <div className="space-history-wrap">
             <button className="space-history-button" type="button" onClick={() => setHistoryOpen((value) => !value)}>
               <History size={16} />历史
             </button>

@@ -87,6 +87,7 @@ type ProjectStore = ProjectState & {
   setWorldPanoramaAsset: (asset?: AssetRecord) => void;
   createSpaceScene: (prompt: string, theme?: SpaceSceneTheme) => string;
   completeSpaceScene: (sceneId: string) => void;
+  selectSpaceScene: (sceneId: string) => void;
   activateSpaceScene: (sceneId: string) => void;
   removeSpaceScene: (sceneId: string) => void;
   toggleCameraVisible: (cameraId: string) => void;
@@ -994,6 +995,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     set((state) => ({
       assets: [...state.assets.filter((item) => item.id !== assetId), asset],
       spaceScenes: [...state.spaceScenes, scene],
+      selectedSpaceSceneId: id,
       activeSpaceSceneId: id,
       worldSettings: {
         ...state.worldSettings,
@@ -1012,11 +1014,18 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
         scene.id === sceneId ? { ...scene, status: "ready" } : scene,
       ),
     })),
+  selectSpaceScene: (sceneId) =>
+    set((state) =>
+      state.spaceScenes.some((scene) => scene.id === sceneId)
+        ? { selectedSpaceSceneId: sceneId }
+        : state,
+    ),
   activateSpaceScene: (sceneId) =>
     set((state) => {
       const scene = state.spaceScenes.find((item) => item.id === sceneId);
       if (!scene) return state;
       return {
+        selectedSpaceSceneId: scene.id,
         activeSpaceSceneId: scene.id,
         worldSettings: {
           ...state.worldSettings,
@@ -1042,6 +1051,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       return {
         assets: state.assets.filter((asset) => asset.id !== removed?.assetId),
         spaceScenes,
+        selectedSpaceSceneId:
+          state.selectedSpaceSceneId === sceneId ? replacement?.id : state.selectedSpaceSceneId,
         activeSpaceSceneId: replacement?.id,
         worldSettings: {
           ...state.worldSettings,

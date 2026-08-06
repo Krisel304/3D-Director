@@ -2,7 +2,7 @@ import type { ProjectState } from "./projectTypes";
 
 export const defaultProject: ProjectState = {
   schemaVersion: "0.1",
-  projectName: "3D 导演台",
+  projectName: "3D 空间",
   activeShotId: "shot_001",
   activeCameraId: "camera_001",
   activeTool: "move",
@@ -37,6 +37,7 @@ export const defaultProject: ProjectState = {
   },
   assets: [],
   spaceScenes: [],
+  selectedSpaceSceneId: undefined,
   activeSpaceSceneId: undefined,
   objects: [
     {

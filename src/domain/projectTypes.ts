@@ -264,6 +264,7 @@ export type ProjectState = {
   worldSettings: WorldSettings;
   assets: AssetRecord[];
   spaceScenes: SpaceScene[];
+  selectedSpaceSceneId?: string;
   activeSpaceSceneId?: string;
   objects: SceneObject[];
   cameras: SceneCamera[];

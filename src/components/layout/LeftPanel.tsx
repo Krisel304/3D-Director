@@ -29,6 +29,7 @@ export function LeftPanel() {
   const cameras = useProjectStore((state) => state.cameras);
   const groups = useProjectStore((state) => state.groups);
   const spaceScenes = useProjectStore((state) => state.spaceScenes);
+  const selectedSpaceSceneId = useProjectStore((state) => state.selectedSpaceSceneId);
   const activeSpaceSceneId = useProjectStore((state) => state.activeSpaceSceneId);
   const activeGroupId = useProjectStore((state) => state.activeGroupId);
   const selectedAssetIds = useProjectStore((state) => state.selectedAssetIds);
@@ -58,6 +59,7 @@ export function LeftPanel() {
   const duplicateObject = useProjectStore((state) => state.duplicateObject);
   const duplicateCamera = useProjectStore((state) => state.duplicateCamera);
   const duplicateGroup = useProjectStore((state) => state.duplicateGroup);
+  const selectSpaceScene = useProjectStore((state) => state.selectSpaceScene);
   const activateSpaceScene = useProjectStore((state) => state.activateSpaceScene);
   const removeSpaceScene = useProjectStore((state) => state.removeSpaceScene);
   const importError = useProjectStore((state) => state.importError);
@@ -213,14 +215,25 @@ export function LeftPanel() {
           <div className="asset-list">
             {spaceScenes.map((scene) => (
               <div
-                className={`asset-item space-scene-item ${scene.id === activeSpaceSceneId ? "is-active" : ""}`}
+                className={`asset-item space-scene-item ${scene.id === selectedSpaceSceneId ? "is-active" : ""}`}
                 key={scene.id}
-                onClick={() => activateSpaceScene(scene.id)}
+                onClick={() => selectSpaceScene(scene.id)}
               >
                 <Image size={16} />
                 <span className="asset-item-label">{scene.name}</span>
                 {scene.status === "generating" ? <span className="scene-status">生成中</span> : null}
                 <div className="row-actions">
+                  <button
+                    className={scene.id === activeSpaceSceneId ? "is-bound" : ""}
+                    title={scene.id === activeSpaceSceneId ? "当前已绑定场景" : `绑定${scene.name}`}
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      activateSpaceScene(scene.id);
+                    }}
+                  >
+                    {scene.id === activeSpaceSceneId ? "已绑定" : "绑定"}
+                  </button>
                   <button
                     title={`删除${scene.name}`}
                     type="button"

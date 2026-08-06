@@ -99,7 +99,7 @@ function WorkbenchApp() {
 
   return (
     <main className="workbench-shell">
-      <TopBar />
+      <TopBar onExit={() => setSpaceEntered(false)} />
       <section className="workbench-main">
         <LeftPanel />
         <div className={`viewport-wrap ${timelineExpanded ? "timeline-expanded" : ""}`}>

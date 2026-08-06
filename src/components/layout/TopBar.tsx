@@ -1,7 +1,7 @@
 import { CircleHelp, LogOut, X } from "lucide-react";
 import { useProjectStore } from "../../store/projectStore";
 
-export function TopBar() {
+export function TopBar({ onExit }: { onExit?: () => void }) {
   const projectName = useProjectStore((state) => state.projectName);
 
   return (
@@ -12,7 +12,7 @@ export function TopBar() {
           <CircleHelp size={16} />
         </button>
         <div className="top-divider" />
-        <button className="exit-button" type="button">
+        <button className="exit-button" type="button" onClick={onExit}>
           <X size={15} />
           <span>退出</span>
           <LogOut size={0} aria-hidden />

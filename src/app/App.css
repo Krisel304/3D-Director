@@ -445,6 +445,90 @@ button {
 .space-scene-item > svg { color: #78b8e9; }
 .scene-status { color: #e6b76f; font-size: 11px; }
 
+/* Keep the entry as a compact canvas node instead of a second dashboard. */
+.space-node-canvas {
+  grid-template-rows: auto auto auto;
+  justify-items: center;
+  width: min(760px, calc(100vw - 40px));
+  min-height: calc(100vh - 52px);
+  padding: 48px 0 44px;
+}
+
+.space-node-toolbar {
+  justify-self: center;
+  width: min(360px, 100%);
+  justify-content: center;
+}
+
+.space-enter-button {
+  color: #e3e7ea;
+  background: #252a2e;
+}
+
+.space-enter-button:hover {
+  background: #343a40;
+}
+
+.space-node-card {
+  width: min(360px, 100%);
+  min-height: 0;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 8px;
+  padding: 0;
+  background: #131619;
+}
+
+.space-history-wrap {
+  position: absolute;
+  z-index: 4;
+  top: 10px;
+  right: 10px;
+}
+
+.space-history-popover {
+  top: 36px;
+}
+
+.space-history-button {
+  background: rgba(22, 26, 30, 0.74);
+  backdrop-filter: blur(8px);
+}
+
+.space-preview,
+.space-preview-empty {
+  min-height: 0;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+.space-preview-empty button {
+  background: #353b40;
+}
+
+.space-prompt-panel {
+  width: min(720px, 100%);
+  min-height: 126px;
+  border-radius: 9px;
+}
+
+.space-prompt-panel textarea {
+  min-height: 76px;
+}
+
+.row-actions .is-bound {
+  width: auto;
+  padding: 0 6px;
+  color: #aee6bf;
+  background: #1b4228;
+  font-size: 10px;
+}
+
+.row-actions .is-bound:not(:hover) {
+  color: #9fcbab;
+}
+
 .workbench-error-shell {
   display: grid;
   grid-template-rows: none;
