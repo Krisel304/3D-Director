@@ -39,6 +39,8 @@ import type {
   SceneCamera,
   SceneGroup,
   SceneObject,
+  SpaceScene,
+  SpaceSceneTheme,
   SnapshotRecord,
   TimelineKeyframeSelection,
   TimelineKeyframeRef,
@@ -83,6 +85,10 @@ type ProjectStore = ProjectState & {
   updateCamera: (cameraId: string, updates: Partial<SceneCamera>) => void;
   updateWorldSettings: (updates: Partial<WorldSettings>) => void;
   setWorldPanoramaAsset: (asset?: AssetRecord) => void;
+  createSpaceScene: (prompt: string, theme?: SpaceSceneTheme) => string;
+  completeSpaceScene: (sceneId: string) => void;
+  activateSpaceScene: (sceneId: string) => void;
+  removeSpaceScene: (sceneId: string) => void;
   toggleCameraVisible: (cameraId: string) => void;
   toggleCameraLocked: (cameraId: string) => void;
   removeCamera: (cameraId: string) => void;
@@ -187,6 +193,26 @@ function buildIkLinkIds(
 
 function getDefaultBoneId(bones: BoneRecord[]) {
   return bones.find((bone) => !bone.parentId)?.id ?? bones[0]?.id;
+}
+
+const spaceScenePalettes: Record<SpaceSceneTheme, { sky: string; ground: string; glow: string }> = {
+  mist: { sky: "#e8eef5", ground: "#657487", glow: "#ffffff" },
+  verdant: { sky: "#162d24", ground: "#3b7554", glow: "#a4e5ae" },
+  amber: { sky: "#322517", ground: "#a46d28", glow: "#ffd58a" },
+};
+
+function createSpaceSceneAsset(id: string, name: string, theme: SpaceSceneTheme): AssetRecord {
+  const palette = spaceScenePalettes[theme];
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="2048" height="1024" viewBox="0 0 2048 1024"><defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop stop-color="${palette.sky}"/><stop offset=".58" stop-color="${palette.ground}"/></linearGradient><radialGradient id="glow" cx="50%" cy="42%" r="46%"><stop stop-color="${palette.glow}" stop-opacity=".72"/><stop offset="1" stop-color="${palette.glow}" stop-opacity="0"/></radialGradient><pattern id="grid" width="96" height="64" patternUnits="userSpaceOnUse"><path d="M0 64 48 0 96 64M0 64h96" fill="none" stroke="#fff" stroke-opacity=".14"/></pattern></defs><rect width="2048" height="1024" fill="url(#sky)"/><rect width="2048" height="1024" fill="url(#glow)"/><rect y="550" width="2048" height="474" fill="url(#grid)" opacity=".58"/><path d="M0 555h2048" stroke="#fff" stroke-opacity=".35" stroke-width="3"/></svg>`;
+  return {
+    id,
+    name,
+    type: "panorama",
+    objectUrl: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
+    mimeType: "image/svg+xml",
+    size: svg.length,
+    createdAt: new Date().toISOString(),
+  };
 }
 
 function applyAnimationState(state: ProjectState, time: number) {
@@ -914,21 +940,28 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       const previousAsset = state.assets.find(
         (item) => item.id === state.worldSettings.panoramaSphere.assetId,
       );
-      if (previousAsset && previousAsset.id !== asset?.id) {
+      const previousAssetIsScene = state.spaceScenes.some(
+        (scene) => scene.assetId === previousAsset?.id,
+      );
+      if (previousAsset && previousAsset.id !== asset?.id && !previousAssetIsScene) {
         URL.revokeObjectURL(previousAsset.objectUrl);
       }
 
       const nextAssets = asset
         ? [
-            ...state.assets.filter(
-              (item) =>
-                item.id !== state.worldSettings.panoramaSphere.assetId &&
-                item.id !== asset.id,
+            ...state.assets.filter((item) =>
+              item.id !== asset.id &&
+              (
+                item.id !== state.worldSettings.panoramaSphere.assetId ||
+                state.spaceScenes.some((scene) => scene.assetId === item.id)
+              ),
             ),
             asset,
           ]
         : state.assets.filter(
-            (item) => item.id !== state.worldSettings.panoramaSphere.assetId,
+            (item) =>
+              item.id !== state.worldSettings.panoramaSphere.assetId ||
+              state.spaceScenes.some((scene) => scene.assetId === item.id),
           );
 
       return {
@@ -939,6 +972,83 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
             ...state.worldSettings.panoramaSphere,
             assetId: asset?.id,
             visible: asset ? true : false,
+          },
+        },
+      };
+    }),
+  createSpaceScene: (prompt, theme = "mist") => {
+    const id = `space_scene_${crypto.randomUUID()}`;
+    const assetId = `space_panorama_${crypto.randomUUID()}`;
+    const sequence = get().spaceScenes.length + 1;
+    const name = `场景${sequence}`;
+    const scene: SpaceScene = {
+      id,
+      name,
+      prompt: prompt.trim() || "未命名 3D 世界",
+      theme,
+      status: "generating",
+      assetId,
+      createdAt: new Date().toISOString(),
+    };
+    const asset = createSpaceSceneAsset(assetId, name, theme);
+    set((state) => ({
+      assets: [...state.assets.filter((item) => item.id !== assetId), asset],
+      spaceScenes: [...state.spaceScenes, scene],
+      activeSpaceSceneId: id,
+      worldSettings: {
+        ...state.worldSettings,
+        panoramaSphere: {
+          ...state.worldSettings.panoramaSphere,
+          assetId,
+          visible: true,
+        },
+      },
+    }));
+    return id;
+  },
+  completeSpaceScene: (sceneId) =>
+    set((state) => ({
+      spaceScenes: state.spaceScenes.map((scene) =>
+        scene.id === sceneId ? { ...scene, status: "ready" } : scene,
+      ),
+    })),
+  activateSpaceScene: (sceneId) =>
+    set((state) => {
+      const scene = state.spaceScenes.find((item) => item.id === sceneId);
+      if (!scene) return state;
+      return {
+        activeSpaceSceneId: scene.id,
+        worldSettings: {
+          ...state.worldSettings,
+          panoramaSphere: {
+            ...state.worldSettings.panoramaSphere,
+            assetId: scene.assetId,
+            visible: true,
+          },
+        },
+      };
+    }),
+  removeSpaceScene: (sceneId) =>
+    set((state) => {
+      const removed = state.spaceScenes.find((scene) => scene.id === sceneId);
+      const spaceScenes = state.spaceScenes.filter((scene) => scene.id !== sceneId);
+      const replacement =
+        spaceScenes.find((scene) => scene.id === state.activeSpaceSceneId) ??
+        spaceScenes[spaceScenes.length - 1];
+      if (removed) {
+        const asset = state.assets.find((item) => item.id === removed.assetId);
+        if (asset) URL.revokeObjectURL(asset.objectUrl);
+      }
+      return {
+        assets: state.assets.filter((asset) => asset.id !== removed?.assetId),
+        spaceScenes,
+        activeSpaceSceneId: replacement?.id,
+        worldSettings: {
+          ...state.worldSettings,
+          panoramaSphere: {
+            ...state.worldSettings.panoramaSphere,
+            assetId: replacement?.assetId,
+            visible: Boolean(replacement),
           },
         },
       };

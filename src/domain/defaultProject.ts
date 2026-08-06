@@ -36,6 +36,8 @@ export const defaultProject: ProjectState = {
     },
   },
   assets: [],
+  spaceScenes: [],
+  activeSpaceSceneId: undefined,
   objects: [
     {
       id: "object_character_a",

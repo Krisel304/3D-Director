@@ -12,6 +12,7 @@ import {
   Eye,
   EyeOff,
   Focus,
+  Image,
   Lock,
   Search,
   Trash2,
@@ -27,6 +28,8 @@ export function LeftPanel() {
   const objects = useProjectStore((state) => state.objects);
   const cameras = useProjectStore((state) => state.cameras);
   const groups = useProjectStore((state) => state.groups);
+  const spaceScenes = useProjectStore((state) => state.spaceScenes);
+  const activeSpaceSceneId = useProjectStore((state) => state.activeSpaceSceneId);
   const activeGroupId = useProjectStore((state) => state.activeGroupId);
   const selectedAssetIds = useProjectStore((state) => state.selectedAssetIds);
   const activeObjectId = useProjectStore((state) => state.activeObjectId);
@@ -55,6 +58,8 @@ export function LeftPanel() {
   const duplicateObject = useProjectStore((state) => state.duplicateObject);
   const duplicateCamera = useProjectStore((state) => state.duplicateCamera);
   const duplicateGroup = useProjectStore((state) => state.duplicateGroup);
+  const activateSpaceScene = useProjectStore((state) => state.activateSpaceScene);
+  const removeSpaceScene = useProjectStore((state) => state.removeSpaceScene);
   const importError = useProjectStore((state) => state.importError);
   const [groupMenuFor, setGroupMenuFor] = useState<string>();
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; type: "group" | "object" | "camera"; id: string }>();
@@ -201,6 +206,37 @@ export function LeftPanel() {
         <Search size={16} />
         <input placeholder="搜索" />
       </label>
+
+      {spaceScenes.length ? (
+        <div className="asset-section space-scene-section">
+          <div className="section-label">场景</div>
+          <div className="asset-list">
+            {spaceScenes.map((scene) => (
+              <div
+                className={`asset-item space-scene-item ${scene.id === activeSpaceSceneId ? "is-active" : ""}`}
+                key={scene.id}
+                onClick={() => activateSpaceScene(scene.id)}
+              >
+                <Image size={16} />
+                <span className="asset-item-label">{scene.name}</span>
+                {scene.status === "generating" ? <span className="scene-status">生成中</span> : null}
+                <div className="row-actions">
+                  <button
+                    title={`删除${scene.name}`}
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      removeSpaceScene(scene.id);
+                    }}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div className="asset-section asset-group-section">
         <div className="section-label asset-section-heading">

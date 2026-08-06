@@ -3,6 +3,7 @@ import { BottomToolbar } from "../components/layout/BottomToolbar";
 import { LeftPanel } from "../components/layout/LeftPanel";
 import { RightPanel } from "../components/layout/RightPanel";
 import { TimelinePanel } from "../components/panels/TimelinePanel";
+import { SpaceEntry } from "../components/space/SpaceEntry";
 import { TopBar } from "../components/layout/TopBar";
 import { Viewport3D } from "../components/viewport/Viewport3D";
 import { useProjectStore } from "../store/projectStore";
@@ -46,6 +47,7 @@ class AppErrorBoundary extends Component<
 }
 
 function WorkbenchApp() {
+  const [spaceEntered, setSpaceEntered] = useState(false);
   const [timelineExpanded, setTimelineExpanded] = useState(false);
   const [timelineHeight, setTimelineHeight] = useState(420);
   const [runtimeError, setRuntimeError] = useState("");
@@ -90,6 +92,10 @@ function WorkbenchApp() {
 
     return () => window.clearInterval(intervalId);
   }, [isPlaying]);
+
+  if (!spaceEntered) {
+    return <SpaceEntry onEnter={() => setSpaceEntered(true)} />;
+  }
 
   return (
     <main className="workbench-shell">

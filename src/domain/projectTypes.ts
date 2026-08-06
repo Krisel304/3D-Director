@@ -78,6 +78,18 @@ export type AssetRecord = {
   createdAt: string;
 };
 
+export type SpaceSceneTheme = "mist" | "verdant" | "amber";
+
+export type SpaceScene = {
+  id: string;
+  name: string;
+  prompt: string;
+  theme: SpaceSceneTheme;
+  status: "generating" | "ready";
+  assetId: string;
+  createdAt: string;
+};
+
 export type MaterialOverride = {
   materialId: string;
   materialName: string;
@@ -251,6 +263,8 @@ export type ProjectState = {
   outputFrame: OutputFrame;
   worldSettings: WorldSettings;
   assets: AssetRecord[];
+  spaceScenes: SpaceScene[];
+  activeSpaceSceneId?: string;
   objects: SceneObject[];
   cameras: SceneCamera[];
   groups: SceneGroup[];
