@@ -142,14 +142,18 @@ export function SpaceEntry({ onEnter }: { onEnter: () => void }) {
           <div className="space-prompt-actions">
             <button className="space-plus-button" title="添加参考图片或资产" type="button" onClick={() => fileInputRef.current?.click()}><Plus size={17} /></button>
             <div className="space-model-picker">
-              <button type="button" onClick={() => setModelMenuOpen((value) => !value)}><Sparkles size={15} />Tripo 3D 资产<ChevronDown size={14} /></button>
+              <button type="button" onClick={() => setModelMenuOpen((value) => !value)}><Sparkles size={15} />Tripo 3D 模型<ChevronDown size={14} /></button>
               {modelMenuOpen ? (
                 <div className="space-model-menu">
-                  <button type="button" onClick={() => setModelMenuOpen(false)}>Tripo 3D 资产<span>默认</span></button>
-                  <button disabled title="功能即将开放，敬请期待" type="button">3D 世界<span>即将开放</span></button>
+                  <button type="button" onClick={() => setModelMenuOpen(false)}>Tripo 3D 模型</button>
+                  <button className="space-model-option-disabled" disabled type="button">
+                    3D 世界模型
+                    <span className="space-model-hover-hint">功能即将开放，敬请期待</span>
+                  </button>
                 </div>
               ) : null}
             </div>
+            <div className="space-output-type">3D 资产</div>
             <button className="space-mic-button" title="语音输入" type="button"><Mic size={16} /></button>
             <button className="space-generate-button" type="button" onClick={() => beginGeneration()}><SendHorizontal size={16} />生成</button>
           </div>

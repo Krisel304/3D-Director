@@ -456,8 +456,45 @@ button {
 
 .space-node-toolbar {
   justify-self: center;
-  width: min(360px, 100%);
+  width: auto;
   justify-content: center;
+  padding: 3px;
+}
+
+.space-model-option-disabled {
+  position: relative;
+}
+
+.space-model-hover-hint {
+  position: absolute;
+  right: calc(100% + 8px);
+  bottom: 0;
+  display: none;
+  width: max-content;
+  border: 1px solid #444b52;
+  border-radius: 5px;
+  padding: 6px 8px;
+  color: #c4cbd1;
+  background: #202529;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, .34);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.space-model-option-disabled:hover .space-model-hover-hint {
+  display: block;
+}
+
+.space-output-type {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  border: 1px solid #3a4045;
+  border-radius: 5px;
+  padding: 0 9px;
+  color: #cbd2d7;
+  background: #202529;
+  font-size: 12px;
 }
 
 .space-enter-button {
